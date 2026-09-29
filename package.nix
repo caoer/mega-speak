@@ -17,7 +17,7 @@ stdenvNoCC.mkDerivation rec {
   installPhase = ''
     install -Dm755 bin/mega-speak $out/bin/mega-speak
     install -Dm755 bin/mega-speak-server $out/bin/mega-speak-server
-    substituteInPlace $out/bin/mega-speak --replace-fail '@version@' '${version}'
+    substituteInPlace $out/bin/mega-speak $out/bin/mega-speak-server --replace-fail '@version@' '${version}'
   '';
   meta = {
     description = "Say things out loud with Volcengine seed-tts-2.0, here or on another host's speaker";

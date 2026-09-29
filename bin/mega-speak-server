@@ -8,7 +8,8 @@
      200 {"ok": true, "stderr": ...} or 502 {"ok": false, "rc": N, "stderr": ...}.
      host, session and pane name the caller (its hostname, CLAUDE_CODE_SESSION_ID, HERDR_PANE_ID)
      for mega-speak's said log; the caller host is always passed, "unknown" when the body has none.
-  GET /speak    405: proves the route reaches this server, which a health probe can use.
+  GET /speak    405 {"ok": false, "version": ...}: proves the route reaches this server and names
+                its version, for a health probe or a version check.
 
 Anything else is refused. Listens on loopback only: put a tunnel or a reverse proxy in front of
 it. The token file is reread per request, so a rotated token applies at once.
@@ -17,6 +18,7 @@ usage: mega-speak-server <port> <token-file> <mega-speak>
 import hmac, json, re, subprocess, sys, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+VERSION = "@version@"
 PORT, TOKEN_FILE, ZT_SPEAK = int(sys.argv[1]), sys.argv[2], sys.argv[3]
 MAX_BODY, MAX_TEXT, MAX_INSTRUCTION = 16384, 500, 300
 TIMEOUT_S = 150
@@ -86,7 +88,7 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write(f"{self.log_date_time_string()} {who} {fmt % args}\n")
 
     def refuse(self):
-        self.reply(404 if self.path != "/speak" else 405, {"ok": False, "error": "only POST /speak"})
+        self.reply(404 if self.path != "/speak" else 405, {"ok": False, "error": "only POST /speak", "version": VERSION})
 
     do_GET = do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = refuse
 

@@ -25,9 +25,10 @@ The host that plays appends each utterance, when its first audio plays (a dry ru
 synthesized), as one JSON line to $MEGA_SPEAK_LOG, default ~/.local/share/mega-speak/said.jsonl:
 ts, text, emotion, instruction (a custom one only), voice, host, session, pane, dry_run.
 """
-import argparse, base64, datetime, fcntl, http.client, json, os, re, shlex, shutil, socket, subprocess, sys, tempfile, threading, time, tomllib, urllib.parse, uuid, wave
+import argparse, base64, datetime, fcntl, http.client, json, math, os, re, shlex, shutil, socket, struct, subprocess, sys, tempfile, threading, time, tomllib, urllib.parse, uuid, wave
 
 VERSION = "@version@"
+WAKE_HZ = 40  # the wake tone's pitch: below what a small speaker makes audible at a low level
 CONFIG_PATHS = ["/etc/mega-speak/config.toml", "~/.config/mega-speak/config.toml", os.environ.get("MEGA_SPEAK_CONFIG", "")]
 LOG_PATH = os.path.expanduser(os.environ.get("MEGA_SPEAK_LOG", "~/.local/share/mega-speak/said.jsonl"))
 SAMPLE_RATE = 24000
@@ -40,7 +41,8 @@ DEFAULTS = {
     "emotion": "neutral",     # a key of [emotions]
     "instruction": "",        # free-text voice instruction; overrides the emotion's
     "volume": 100,            # playback volume 0–100
-    "lead_in_ms": 400,        # silence the player starts with, so the output device is awake when speech arrives
+    "lead_in_ms": 1000,       # the least wake tone played before the speech
+    "lead_in_db": -40.0,      # its peak level in dBFS; -inf plays digital silence instead
     "api_url": "https://openspeech.bytedance.com/api/v3/tts/unidirectional",
     "resource_id": "seed-tts-2.0",
     "app_id": "",             # set it for the console's App ID + Access Token auth; empty: X-Api-Key
@@ -154,8 +156,48 @@ def player_cmd(cfg):
     return ["afplay", "-v", f"{vol / 100:.2f}"], "file"  # afplay needs a whole file
 
 
-def silence(cfg):
-    return bytes(2 * SAMPLE_RATE * max(0, int(cfg["lead_in_ms"])) // 1000)
+def wake_period(cfg):
+    """One period of the wake tone, s16le PCM. Some speakers idle while their input is silent and
+    drop the first moment of sound that wakes them; this tone is that sound, low and quiet enough
+    not to be heard, so the speech arrives at a speaker already awake."""
+    amp = min(32767, 32767 * 10 ** (float(cfg["lead_in_db"]) / 20))
+    n = SAMPLE_RATE // WAKE_HZ
+    return struct.pack(f"<{n}h", *(round(amp * math.sin(2 * math.pi * i / n)) for i in range(n)))
+
+
+def lead_in(cfg):
+    """The wake tone for lead_in_ms, in whole periods."""
+    period = wake_period(cfg)
+    return period * math.ceil(max(0, int(cfg["lead_in_ms"])) * WAKE_HZ / 1000)
+
+
+class Wake(threading.Thread):
+    """Feeds the wake tone to the player from its start until the speech, paced a little ahead of
+    playback: the player never runs dry between the lead-in and the first audio (ffplay stalls
+    its output when its input does), and the speech follows the tone without a gap."""
+    AHEAD_S = 0.15
+
+    def __init__(self, cfg, out):
+        super().__init__(daemon=True)
+        self.out, self.period, self.lead = out, wake_period(cfg), lead_in(cfg)
+        self.stop, self.written, self.t0 = threading.Event(), 0, time.monotonic()
+
+    def run(self):
+        per = len(self.period) / 2 / SAMPLE_RATE
+        try:
+            while not self.stop.is_set():
+                while self.written < (time.monotonic() - self.t0 + self.AHEAD_S) / per:
+                    self.out.write(self.period); self.written += 1
+                self.out.flush()
+                self.stop.wait(per)
+        except OSError:  # the player is gone; the speech write reports it
+            pass
+
+    def finish(self):
+        """Stop the tone, topped up to lead_in_ms; the caller writes the speech next."""
+        if not self.stop.is_set():
+            self.stop.set(); self.join()
+            self.out.write(self.lead[len(self.period) * self.written:])
 
 
 def log_said(said):
@@ -207,14 +249,15 @@ def speak_local(cfg, text, dry, said):
             return stats
         if mode == "pcm":
             p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-            # The lead-in goes in before synthesis starts: the player opens the device on it while
-            # the first audio is still on its way, and the device is running when speech arrives.
-            p.stdin.write(silence(cfg)); p.stdin.flush()
-            stats = synthesize(cfg, text, "pcm", logging_first(said, p.stdin.write))
-            p.stdin.close(); p.wait()
+            # The wake tone plays while the first audio is on its way (synthesis takes 1-3 s).
+            wake = Wake(cfg, p.stdin); wake.start()
+            def play(chunk):
+                wake.finish(); p.stdin.write(chunk)
+            stats = synthesize(cfg, text, "pcm", logging_first(said, play))
+            wake.finish(); p.stdin.close(); p.wait()
             return stats
         with tempfile.NamedTemporaryFile(suffix=".wav") as f:
-            buf = bytearray(silence(cfg))
+            buf = bytearray(lead_in(cfg))
             stats = synthesize(cfg, text, "pcm", buf.extend)
             write_wav(f.name, bytes(buf))
             log_said(said)  # afplay starts on the finished file
