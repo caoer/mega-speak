@@ -1,0 +1,374 @@
+#!/usr/bin/env python3
+"""mega-speak — say something out loud with Volcengine seed-tts-2.0.
+
+  mega-speak "部署挂了，需要你看一眼。"             # the configured voice and emotion
+  mega-speak --emotion cheerful "好消息：CI 过了。"
+  mega-speak --instruction "你用播音腔、一本正经地说" "..."
+  echo "长文本" | mega-speak -                       # text from stdin
+  mega-speak --out clip.mp3 "..."                    # synthesize to a file, play nothing
+  mega-speak --dry-run "..."                         # synthesize, show the play route, play nothing
+  mega-speak --list-emotions | --print-config | --version
+
+Config is TOML, read in this order, each file overriding the one before key by key:
+/etc/mega-speak/config.toml, ~/.config/mega-speak/config.toml, $MEGA_SPEAK_CONFIG. Flags
+override all of them. config.example.toml in the repository documents every key.
+
+The API key comes from $MEGA_SPEAK_API_KEY, else the file api_key_file names, else what the
+command api_key_cmd prints; mega-speak never stores it.
+
+Playback is on this host unless output_host names another one. Then the text goes to that
+host's mega-speak-server at output_url (bearer token from token_file or token_cmd), or over
+`ssh <output_ssh>` when no token is set, with the caller's host, CLAUDE_CODE_SESSION_ID and
+HERDR_PANE_ID; that host synthesizes and plays it with its own config.
+
+The host that plays appends each utterance, when its first audio plays (a dry run when it is
+synthesized), as one JSON line to $MEGA_SPEAK_LOG, default ~/.local/share/mega-speak/said.jsonl:
+ts, text, emotion, instruction (a custom one only), voice, host, session, pane, dry_run.
+"""
+import argparse, base64, datetime, fcntl, http.client, json, os, re, shlex, shutil, socket, subprocess, sys, tempfile, threading, time, tomllib, urllib.parse, uuid, wave
+
+VERSION = "@version@"
+CONFIG_PATHS = ["/etc/mega-speak/config.toml", "~/.config/mega-speak/config.toml", os.environ.get("MEGA_SPEAK_CONFIG", "")]
+LOG_PATH = os.path.expanduser(os.environ.get("MEGA_SPEAK_LOG", "~/.local/share/mega-speak/said.jsonl"))
+SAMPLE_RATE = 24000
+# the caller fields a forwarded request may carry; mega-speak-server checks the same patterns
+CALLER = {"host": r"[A-Za-z0-9][A-Za-z0-9.-]{0,63}", "session": r"[A-Za-z0-9_-]{1,64}", "pane": r"[A-Za-z0-9:_-]{1,32}"}
+
+DEFAULTS = {
+    "voice": "zh_female_vv_uranus_bigtts",  # any seed-tts-2.0 *_uranus_bigtts voice
+    "speed": 1.0,             # 0.5–2.0, sent as speech_rate
+    "emotion": "neutral",     # a key of [emotions]
+    "instruction": "",        # free-text voice instruction; overrides the emotion's
+    "volume": 100,            # playback volume 0–100
+    "lead_in_ms": 400,        # silence the player starts with, so the output device is awake when speech arrives
+    "api_url": "https://openspeech.bytedance.com/api/v3/tts/unidirectional",
+    "resource_id": "seed-tts-2.0",
+    "app_id": "",             # set it for the console's App ID + Access Token auth; empty: X-Api-Key
+    "api_key_file": "",
+    "api_key_cmd": [],        # argv whose stdout is the key, e.g. a password manager or sops
+    "output_host": "",        # the host whose speaker plays (its short hostname); empty: this one
+    "output_url": "",         # that host's mega-speak-server, e.g. https://speak.example.com/speak
+    "token_file": "",         # the server's bearer token
+    "token_cmd": [],
+    "output_ssh": "",         # ssh destination of output_host, used when no token is set
+    "remote_cmd": "mega-speak",
+}
+
+# Emotion presets are voice instructions (context_texts). seed-tts-2.0 voices marked 指令遵循 follow them;
+# the audio_params.emotion enum belongs to 1.0 multi-emotion voices.
+EMOTIONS = {
+    "neutral": "",
+    "cheerful": "你用开心、轻快的语气说，像在跟朋友分享一个好消息，带点笑意。",
+    "excited": "你用特别兴奋、激动的语气说，像刚刚赢了一场比赛。",
+    "urgent": "你用着急、提醒对方马上注意的语气说，语速稍快、语气坚定，但不要慌张。",
+    "calm": "你用平静、温和、让人放心的语气慢慢说。",
+    "serious": "你用严肃、认真、一本正经的语气说。",
+    "playful": "你用俏皮、调皮、带点开玩笑的语气说，像在逗对方。",
+    "apologetic": "你用有点抱歉、不好意思的语气说。",
+    "sad": "你用失落、遗憾的语气说。",
+    "whisper": "你压低声音，用悄悄话的语气轻轻说。",
+}
+
+
+def load_config():
+    cfg, emotions, read = dict(DEFAULTS), dict(EMOTIONS), []
+    for p in CONFIG_PATHS:
+        p = os.path.expanduser(p)
+        if p and os.path.exists(p):
+            with open(p, "rb") as f:
+                user = tomllib.load(f)
+            emotions.update(user.pop("emotions", {}) or {})
+            cfg.update(user)
+            read.append(p)
+    return cfg, emotions, read
+
+
+def short_host():
+    return socket.gethostname().split(".")[0]
+
+
+def run_cmd(argv, what):
+    try:
+        out = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        sys.exit(f"mega-speak: {what}: {shlex.join(argv)}: {e}")
+    if out.returncode or not out.stdout.strip():
+        sys.exit(f"mega-speak: {what}: {shlex.join(argv)} exited {out.returncode}: {out.stderr.strip()[:300]}")
+    return out.stdout.strip()
+
+
+def api_key(cfg):
+    if os.environ.get("MEGA_SPEAK_API_KEY"):
+        return os.environ["MEGA_SPEAK_API_KEY"].strip()
+    if cfg["api_key_file"]:
+        with open(os.path.expanduser(cfg["api_key_file"])) as f:
+            return f.read().strip()
+    if cfg["api_key_cmd"]:
+        return run_cmd(cfg["api_key_cmd"], "api_key_cmd")
+    sys.exit("mega-speak: no API key: set MEGA_SPEAK_API_KEY, api_key_file or api_key_cmd (see --print-config)")
+
+
+def synthesize(cfg, text, fmt, on_audio):
+    """Stream audio chunks of `fmt` (pcm|mp3|ogg_opus) to on_audio; return timing/usage."""
+    t0 = time.perf_counter()
+    u = urllib.parse.urlsplit(cfg["api_url"])
+    conn = http.client.HTTPSConnection(u.netloc, timeout=60)
+    th = threading.Thread(target=conn.connect); th.start()  # the TLS handshake overlaps the key lookup
+    key = api_key(cfg); th.join()
+    speech_rate = max(-50, min(100, round((float(cfg["speed"]) - 1) * 100)))
+    req = {"text": text, "speaker": cfg["voice"],
+           "audio_params": {"format": fmt, "sample_rate": SAMPLE_RATE, "speech_rate": speech_rate}}
+    if cfg["instruction"]:
+        req["additions"] = json.dumps({"context_texts": [cfg["instruction"]]}, ensure_ascii=False)
+    body = json.dumps({"user": {"uid": "mega-speak"}, "req_params": req}, ensure_ascii=False).encode()
+    auth = {"X-Api-App-Id": cfg["app_id"], "X-Api-Access-Key": key} if cfg["app_id"] else {"X-Api-Key": key}
+    conn.request("POST", u.path, body=body, headers={
+        **auth, "X-Api-Resource-Id": cfg["resource_id"], "X-Api-Request-Id": str(uuid.uuid4()),
+        "X-Control-Require-Usage-Tokens-Return": "*", "Content-Type": "application/json"})
+    r = conn.getresponse()
+    if r.status != 200:
+        sys.exit(f"mega-speak: HTTP {r.status} {r.getheader('X-Api-Message') or ''} {r.read()[:300]!r}")
+    first = None; usage = None; nbytes = 0
+    for line in r:
+        if not line.strip():
+            continue
+        j = json.loads(line)
+        if j.get("code") not in (0, 20000000):
+            sys.exit(f"mega-speak: API error {j.get('code')}: {j.get('message')}")
+        if j.get("data"):
+            chunk = base64.b64decode(j["data"])
+            if first is None:
+                first = time.perf_counter() - t0
+            nbytes += len(chunk); on_audio(chunk)
+        usage = j.get("usage") or usage
+    conn.close()
+    return {"first_audio_s": round(first or 0, 3), "total_s": round(time.perf_counter() - t0, 3),
+            "bytes": nbytes, "chars": (usage or {}).get("text_words", len(text))}
+
+
+def player_cmd(cfg):
+    vol = max(0, min(100, int(cfg["volume"])))
+    if shutil.which("ffplay"):  # streams raw PCM: audio starts with the first chunk
+        return ["ffplay", "-nodisp", "-autoexit", "-loglevel", "error", "-f", "s16le", "-ar", str(SAMPLE_RATE),
+                "-ch_layout", "mono", "-volume", str(vol), "-i", "-"], "pcm"
+    return ["afplay", "-v", f"{vol / 100:.2f}"], "file"  # afplay needs a whole file
+
+
+def silence(cfg):
+    return bytes(2 * SAMPLE_RATE * max(0, int(cfg["lead_in_ms"])) // 1000)
+
+
+def log_said(said):
+    """Append one utterance to LOG_PATH; a failed write never stops the speech."""
+    line = json.dumps({"ts": datetime.datetime.now().astimezone().isoformat(timespec="seconds"), **said},
+                      ensure_ascii=False) + "\n"
+    try:
+        os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+        fd = os.open(LOG_PATH, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            os.write(fd, line.encode())  # one O_APPEND write: concurrent writers never interleave a line
+        finally:
+            os.close(fd)
+    except OSError as e:
+        print(f"mega-speak: cannot append to {LOG_PATH}: {e}", file=sys.stderr)
+
+
+def logging_first(said, on_audio):
+    """on_audio that logs `said` when the first chunk arrives, when it starts being heard."""
+    pending = [said]
+    def f(chunk):
+        if pending:
+            log_said(pending.pop())
+        on_audio(chunk)
+    return f
+
+
+def caller(a):
+    """Who is speaking: the forwarded --caller-* flags on the output host, else this process's own
+    host, CLAUDE_CODE_SESSION_ID and HERDR_PANE_ID. Values outside CALLER's patterns are dropped."""
+    if a.caller_host is not None:
+        given = {"host": a.caller_host, "session": a.caller_session, "pane": a.caller_pane}
+    else:
+        given = {"host": short_host(), "session": os.environ.get("CLAUDE_CODE_SESSION_ID"),
+                 "pane": os.environ.get("HERDR_PANE_ID")}
+    return {k: v for k, v in given.items() if v and re.fullmatch(CALLER[k], v)}
+
+
+def speak_local(cfg, text, dry, said):
+    cmd, mode = player_cmd(cfg)
+    lock_path = os.path.expanduser("~/.cache/mega-speak.lock")
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    with open(lock_path, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)  # one utterance at a time; concurrent callers queue here
+        if dry:
+            stats = synthesize(cfg, text, "pcm", logging_first(said, lambda c: None))
+            shown = cmd + (["<tmpfile.wav>"] if mode == "file" else [])
+            print(f"dry-run: would play on {socket.gethostname()} via: {shlex.join(shown)}", file=sys.stderr)
+            return stats
+        if mode == "pcm":
+            p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+            # The lead-in goes in before synthesis starts: the player opens the device on it while
+            # the first audio is still on its way, and the device is running when speech arrives.
+            p.stdin.write(silence(cfg)); p.stdin.flush()
+            stats = synthesize(cfg, text, "pcm", logging_first(said, p.stdin.write))
+            p.stdin.close(); p.wait()
+            return stats
+        with tempfile.NamedTemporaryFile(suffix=".wav") as f:
+            buf = bytearray(silence(cfg))
+            stats = synthesize(cfg, text, "pcm", buf.extend)
+            write_wav(f.name, bytes(buf))
+            log_said(said)  # afplay starts on the finished file
+            subprocess.run(cmd + [f.name], check=False)
+            return stats
+
+
+def write_wav(path, pcm):
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(SAMPLE_RATE); w.writeframes(pcm)
+
+
+def write_file(cfg, text, path):
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".wav":
+        buf = bytearray(); stats = synthesize(cfg, text, "pcm", buf.extend)
+        write_wav(path, bytes(buf))
+        return stats
+    fmt = {".mp3": "mp3", ".ogg": "ogg_opus", ".opus": "ogg_opus", ".pcm": "pcm"}.get(ext)
+    if not fmt:
+        sys.exit("mega-speak: --out must end in .mp3, .wav, .ogg/.opus or .pcm")
+    with open(path, "wb") as f:
+        return synthesize(cfg, text, fmt, f.write)
+
+
+def http_token(cfg):
+    if cfg["token_file"]:
+        try:
+            with open(os.path.expanduser(cfg["token_file"])) as f:
+                return f.read().strip() or None
+        except OSError:
+            pass
+    if cfg["token_cmd"]:
+        try:
+            return run_cmd(cfg["token_cmd"], "token_cmd")
+        except SystemExit:
+            return None
+    return None
+
+
+def chunks(text, limit=500):
+    """Split at sentence ends so each request stays under the server's text cap."""
+    out, cur = [], ""
+    for piece in re.split(r"(?<=[。！？!?；;\n])", text):
+        while len(piece) > limit:
+            out.append(piece[:limit]); piece = piece[limit:]
+        if len(cur) + len(piece) > limit:
+            out.append(cur); cur = ""
+        cur += piece
+    return [c.strip() for c in out + [cur] if c.strip()]
+
+
+def speak_http(cfg, text, opts, dry, token, who):
+    import urllib.error, urllib.request
+    if dry:
+        print(f"dry-run: route {short_host()} -> {cfg['output_host']} via POST {cfg['output_url']}", file=sys.stderr)
+    for part in chunks(text):
+        body = dict(opts, **who, text=part, **({"dry_run": True} if dry else {}))
+        req = urllib.request.Request(cfg["output_url"], data=json.dumps(body, ensure_ascii=False).encode(), method="POST",
+                                     # Cloudflare's Browser Integrity Check refuses the default Python-urllib agent (403, 1010)
+                                     headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
+                                              "User-Agent": f"mega-speak/{VERSION}"})
+        try:
+            with urllib.request.urlopen(req, timeout=110) as r:
+                j = json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            try:
+                j = json.loads(raw)
+            except ValueError:
+                j = {"error": raw[:300].decode(errors="replace")}
+            sys.exit(f"mega-speak: {cfg['output_url']} HTTP {e.code}: {j.get('error') or j.get('stderr') or j}")
+        except OSError as e:
+            sys.exit(f"mega-speak: cannot reach {cfg['output_url']}: {e}")
+        if j.get("stderr"):
+            print(j["stderr"].rstrip(), file=sys.stderr)
+    sys.exit(0)
+
+
+def speak_ssh(cfg, text, forward, dry):
+    remote = shlex.join(forward)
+    cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", cfg["output_ssh"], remote]
+    if dry:
+        print(f"dry-run: route {short_host()} -> {cfg['output_host']} via: {shlex.join(cmd)}", file=sys.stderr)
+    r = subprocess.run(cmd, input=text.encode())
+    if r.returncode == 255:
+        sys.exit(f"mega-speak: `ssh {cfg['output_ssh']}` failed, and no token for {cfg['output_url'] or 'output_url'} is set")
+    sys.exit(r.returncode)
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="mega-speak", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("text", nargs="*", help="what to say; '-' or nothing reads stdin")
+    ap.add_argument("--voice"); ap.add_argument("--speed", type=float, help="0.5–2.0")
+    ap.add_argument("--emotion", help="preset name, see --list-emotions")
+    ap.add_argument("--instruction", help="free-text voice instruction (Chinese works best); overrides --emotion")
+    ap.add_argument("--volume", type=int, help="playback volume 0–100")
+    ap.add_argument("--out", metavar="FILE", help="synthesize to FILE (.mp3/.wav/.ogg/.pcm) and play nothing")
+    ap.add_argument("--output-host", help="host whose speaker plays (default from config)")
+    ap.add_argument("--dry-run", action="store_true", help="synthesize and show the play route, play nothing")
+    ap.add_argument("--local", action="store_true", help=argparse.SUPPRESS)  # set by the server and the ssh route
+    for k in CALLER:  # the forwarded caller, set by the ssh route and the server
+        ap.add_argument(f"--caller-{k}", help=argparse.SUPPRESS)
+    ap.add_argument("--list-emotions", action="store_true"); ap.add_argument("--print-config", action="store_true")
+    ap.add_argument("--version", action="version", version=f"mega-speak {VERSION}")
+    a = ap.parse_args()
+
+    cfg, emotions, read = load_config()
+    for k in ("voice", "speed", "emotion", "instruction", "volume", "output_host"):
+        if getattr(a, k) is not None:
+            cfg[k] = getattr(a, k)
+    if a.list_emotions:
+        for k, v in emotions.items():
+            print(f"{k:12} {v}")
+        return
+    if a.emotion is not None and a.instruction is None:
+        cfg["instruction"] = ""  # an explicit --emotion beats a configured instruction
+    if not cfg["instruction"]:
+        if cfg["emotion"] not in emotions:
+            sys.exit(f"mega-speak: unknown emotion {cfg['emotion']!r}; known: {', '.join(emotions)}")
+        cfg["instruction"] = emotions[cfg["emotion"]]
+    if a.print_config:
+        print(json.dumps(cfg, ensure_ascii=False, indent=1))
+        print(f"version: {VERSION}\nconfig files read: {', '.join(read) or 'none'}\nlog: {LOG_PATH}")
+        return
+
+    text = " ".join(a.text) if a.text and a.text != ["-"] else sys.stdin.read()
+    text = text.strip()
+    if not text:
+        sys.exit("mega-speak: nothing to say")
+
+    emotion = cfg["emotion"] if cfg["instruction"] == emotions.get(cfg["emotion"]) else "custom"
+    if a.out:
+        stats = write_file(cfg, text, a.out)
+    elif a.local or cfg["output_host"] in ("", short_host()):
+        said = {"text": text, "emotion": emotion, **({"instruction": cfg["instruction"]} if emotion == "custom" else {}),
+                "voice": cfg["voice"], **caller(a), "dry_run": a.dry_run}
+        stats = speak_local(cfg, text, a.dry_run, said)
+    else:
+        # forward only what the caller set: the output host's config owns every other choice
+        opts = {k: getattr(a, k) for k in ("voice", "speed", "emotion", "instruction", "volume") if getattr(a, k) is not None}
+        who = caller(a)
+        token = http_token(cfg) if cfg["output_url"] else None
+        if token:
+            speak_http(cfg, text, opts, a.dry_run, token, who)
+        if not cfg["output_ssh"]:
+            sys.exit(f"mega-speak: output_host is {cfg['output_host']}, but neither output_url with a token nor output_ssh is set")
+        fwd = [cfg["remote_cmd"], "--local"] + [f"--{k}={v}" for k, v in opts.items()]
+        fwd += [f"--caller-{k}={v}" for k, v in who.items()] + (["--dry-run"] if a.dry_run else []) + ["-"]
+        speak_ssh(cfg, text, fwd, a.dry_run)
+    print(f"mega-speak: voice={cfg['voice']} emotion={emotion} "
+          f"first_audio={stats['first_audio_s']}s total={stats['total_s']}s chars={stats['chars']}"
+          + (f" -> {a.out}" if a.out else ""), file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

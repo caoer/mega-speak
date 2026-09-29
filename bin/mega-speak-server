@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""mega-speak-server — the speak action, for callers on other hosts.
+
+  POST /speak   Authorization: Bearer <token>
+                {"text", "voice"?, "speed"?, "emotion"?, "instruction"?, "volume"?, "dry_run"?,
+                 "host"?, "session"?, "pane"?}
+  -> runs `mega-speak --local [flags] -` with the text on stdin (argv list, no shell) and answers
+     200 {"ok": true, "stderr": ...} or 502 {"ok": false, "rc": N, "stderr": ...}.
+     host, session and pane name the caller (its hostname, CLAUDE_CODE_SESSION_ID, HERDR_PANE_ID)
+     for mega-speak's said log; the caller host is always passed, "unknown" when the body has none.
+  GET /speak    405: proves the route reaches this server, which a health probe can use.
+
+Anything else is refused. Listens on loopback only: put a tunnel or a reverse proxy in front of
+it. The token file is reread per request, so a rotated token applies at once.
+usage: mega-speak-server <port> <token-file> <mega-speak>
+"""
+import hmac, json, re, subprocess, sys, threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+PORT, TOKEN_FILE, ZT_SPEAK = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+MAX_BODY, MAX_TEXT, MAX_INSTRUCTION = 16384, 500, 300
+TIMEOUT_S = 150
+slots = threading.BoundedSemaphore(4)  # mega-speak queues playback itself; this caps waiting callers
+# the caller fields, as mega-speak's CALLER checks them
+CALLER = {"host": r"[A-Za-z0-9][A-Za-z0-9.-]{0,63}", "session": r"[A-Za-z0-9_-]{1,64}", "pane": r"[A-Za-z0-9:_-]{1,32}"}
+
+
+def flags(req):
+    """Validated mega-speak flags for a request body, or raise ValueError."""
+    allowed = {"text", "voice", "speed", "emotion", "instruction", "volume", "dry_run", *CALLER}
+    if not isinstance(req, dict) or set(req) - allowed:
+        raise ValueError(f"allowed keys: {sorted(allowed)}")
+    text = req.get("text")
+    if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT:
+        raise ValueError(f"text: 1..{MAX_TEXT} characters")
+    out = []
+    if "voice" in req:
+        if not isinstance(req["voice"], str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", req["voice"]):
+            raise ValueError("voice: [A-Za-z0-9_.-]{1,80}")
+        out.append(f"--voice={req['voice']}")
+    if "emotion" in req:
+        if not isinstance(req["emotion"], str) or not re.fullmatch(r"[a-z_]{1,32}", req["emotion"]):
+            raise ValueError("emotion: [a-z_]{1,32}")
+        out.append(f"--emotion={req['emotion']}")
+    if "speed" in req:
+        s = req["speed"]
+        if isinstance(s, bool) or not isinstance(s, (int, float)) or not 0.5 <= s <= 2.0:
+            raise ValueError("speed: 0.5..2.0")
+        out.append(f"--speed={float(s)}")
+    if "volume" in req:
+        v = req["volume"]
+        if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= 100:
+            raise ValueError("volume: integer 0..100")
+        out.append(f"--volume={v}")
+    if "instruction" in req:
+        i = req["instruction"]
+        if not isinstance(i, str) or len(i) > MAX_INSTRUCTION or any(ord(c) < 32 for c in i):
+            raise ValueError(f"instruction: up to {MAX_INSTRUCTION} characters, no control characters")
+        out.append(f"--instruction={i}")  # = form: a value never parses as an option
+    if "dry_run" in req:
+        if not isinstance(req["dry_run"], bool):
+            raise ValueError("dry_run: boolean")
+        out += ["--dry-run"] if req["dry_run"] else []
+    for k, pattern in CALLER.items():
+        if k in req and (not isinstance(req[k], str) or not re.fullmatch(pattern, req[k])):
+            raise ValueError(f"{k}: {pattern}")
+    out.append(f"--caller-host={req.get('host', 'unknown')}")
+    out += [f"--caller-{k}={req[k]}" for k in ("session", "pane") if k in req]
+    return text, out
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "mega-speak"
+    sys_version = ""
+
+    def reply(self, code, obj):
+        body = json.dumps(obj, ensure_ascii=False).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+        who = self.headers.get("CF-Connecting-IP", self.client_address[0]) if self.headers else "-"
+        sys.stderr.write(f"{self.log_date_time_string()} {who} {fmt % args}\n")
+
+    def refuse(self):
+        self.reply(404 if self.path != "/speak" else 405, {"ok": False, "error": "only POST /speak"})
+
+    do_GET = do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = refuse
+
+    def do_POST(self):
+        if self.path != "/speak":
+            return self.reply(404, {"ok": False, "error": "only POST /speak"})
+        with open(TOKEN_FILE) as f:
+            token = f.read().strip()
+        given = self.headers.get("Authorization", "")
+        if not token or not hmac.compare_digest(given.encode(), f"Bearer {token}".encode()):
+            return self.reply(401, {"ok": False, "error": "unauthorized"})
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            return self.reply(411, {"ok": False, "error": "Content-Length required"})
+        if not 0 < length <= MAX_BODY:
+            return self.reply(413, {"ok": False, "error": f"body: 1..{MAX_BODY} bytes"})
+        try:
+            text, extra = flags(json.loads(self.rfile.read(length)))
+        except (ValueError, UnicodeDecodeError) as e:
+            return self.reply(400, {"ok": False, "error": str(e)})
+        if not slots.acquire(blocking=False):
+            return self.reply(429, {"ok": False, "error": "busy"})
+        try:
+            p = subprocess.run([ZT_SPEAK, "--local", *extra, "-"], input=text.encode(),
+                               capture_output=True, timeout=TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            return self.reply(504, {"ok": False, "error": f"mega-speak exceeded {TIMEOUT_S}s"})
+        finally:
+            slots.release()
+        err = p.stderr.decode(errors="replace").strip()[-2000:]
+        sys.stderr.write(f"speak chars={len(text)} flags={extra} rc={p.returncode} {err.splitlines()[-1] if err else ''}\n")
+        if p.returncode:
+            return self.reply(502, {"ok": False, "rc": p.returncode, "stderr": err})
+        self.reply(200, {"ok": True, "stderr": err})
+
+
+ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
