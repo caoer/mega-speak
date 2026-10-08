@@ -75,6 +75,7 @@ const iconSize = 15.0 // an icon's box; the symbol draws at 12 pt inside it
 type Board struct {
 	OnOpen, OnClose func()
 	OnClick         func(row int)
+	OnVoices        func()
 
 	// main thread only
 	item, pop, table, note, empty objc.ID
@@ -106,6 +107,11 @@ func boardClass() objc.ID {
 		cls, err := objc.RegisterClass("MegaSpeakBoard", objc.GetClass("NSObject"),
 			[]*objc.Protocol{objc.GetProtocol("NSTableViewDataSource"), objc.GetProtocol("NSTableViewDelegate"), objc.GetProtocol("NSPopoverDelegate")}, nil,
 			[]objc.MethodDef{
+				{Cmd: sel("voices:"), Fn: func(_ objc.ID, _ objc.SEL, _ objc.ID) {
+					if theBoard.OnVoices != nil {
+						theBoard.OnVoices()
+					}
+				}},
 				{Cmd: sel("toggle:"), Fn: func(_ objc.ID, _ objc.SEL, _ objc.ID) { theBoard.toggle() }},
 				{Cmd: sel("rowClicked:"), Fn: func(_ objc.ID, _ objc.SEL, tv objc.ID) {
 					if r := sendInt(tv, "clickedRow"); r >= 0 && r < len(theBoard.rows) && theBoard.OnClick != nil {
@@ -127,7 +133,7 @@ func boardClass() objc.ID {
 				}},
 				{Cmd: sel("popoverDidClose:"), Fn: func(_ objc.ID, _ objc.SEL, _ objc.ID) {
 					// closed by Esc: hand the focus back to the app before this one
-					if app := send(class("NSApplication"), "sharedApplication"); sendBool(app, "isActive") {
+					if app := send(class("NSApplication"), "sharedApplication"); sendBool(app, "isActive") && (voiceWindow == nil || !sendBool(voiceWindow.window, "isVisible")) {
 						send(app, "hide:", objc.ID(0))
 					}
 					if theBoard.OnClose != nil {
@@ -173,12 +179,16 @@ func (b *Board) build(symbol, title string, w, h float64) {
 	send(ground, "setFillColor:", send(class("NSColor"), "controlBackgroundColor"))
 	send(root, "addSubview:", ground)
 	head := label(title, send(class("NSFont"), "systemFontOfSize:weight:", 13.0, 0.3), 0) // NSFontWeightSemibold
-	send(head, "setFrame:", CGRect{16, h - 30, w / 2, 18})
+	send(head, "setFrame:", CGRect{16, h - 30, 110, 18})
 	send(root, "addSubview:", head)
+	voices := send(class("NSButton"), "buttonWithTitle:target:action:", nsString("选择音色…"), t, sel("voices:"))
+	send(voices, "setFrame:", CGRect{130, h - 35, 106, 28})
+	send(voices, "setToolTip:", nsString("搜索音色、收藏并播放本地试听"))
+	send(root, "addSubview:", voices)
 	b.note = label("", send(class("NSFont"), "systemFontOfSize:", 11.0), send(class("NSColor"), "secondaryLabelColor"))
 	send(b.note, "setAlignment:", alignRight)
 	send(b.note, "setLineBreakMode:", 4)
-	send(b.note, "setFrame:", CGRect{w / 3, h - 29, w*2/3 - 16, 16})
+	send(b.note, "setFrame:", CGRect{250, h - 29, w - 266, 16})
 	send(root, "addSubview:", b.note)
 
 	scroll := send(send(send(class("NSScrollView"), "alloc"), "initWithFrame:", CGRect{0, 0, w, h - boardHeader}), "autorelease")

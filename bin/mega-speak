@@ -10,7 +10,8 @@
   mega-speak --list-emotions | --print-config | --version
 
 Config is TOML, read in this order, each file overriding the one before key by key:
-/etc/mega-speak/config.toml, ~/.config/mega-speak/config.toml, $MEGA_SPEAK_CONFIG. Flags
+/etc/mega-speak/config.toml, ~/.config/mega-speak/config.toml,
+~/.config/mega-speak/voice.toml (the app's selection), $MEGA_SPEAK_CONFIG. Flags
 override all of them. config.example.toml in the repository documents every key.
 
 The API key comes from $MEGA_SPEAK_API_KEY, else the file api_key_file names, else what the
@@ -29,7 +30,8 @@ import argparse, base64, datetime, fcntl, http.client, json, math, os, re, shlex
 
 VERSION = "@version@"
 WAKE_HZ = 40  # the wake tone's pitch: below what a small speaker makes audible at a low level
-CONFIG_PATHS = ["/etc/mega-speak/config.toml", "~/.config/mega-speak/config.toml", os.environ.get("MEGA_SPEAK_CONFIG", "")]
+VOICE_PATH = os.path.expanduser(os.environ.get("MEGA_SPEAK_VOICE_CONFIG", "~/.config/mega-speak/voice.toml"))
+CONFIG_PATHS = ["/etc/mega-speak/config.toml", "~/.config/mega-speak/config.toml", VOICE_PATH, os.environ.get("MEGA_SPEAK_CONFIG", "")]
 LOG_PATH = os.path.expanduser(os.environ.get("MEGA_SPEAK_LOG", "~/.local/share/mega-speak/said.jsonl"))
 SAMPLE_RATE = 24000
 # the caller fields a forwarded request may carry; mega-speak-server checks the same patterns
@@ -87,6 +89,31 @@ def load_config():
 
 def short_host():
     return socket.gethostname().split(".")[0]
+
+
+def save_voice(voice):
+    """Persist only the selected voice; credentials and other settings stay in their files."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", voice):
+        raise ValueError("invalid voice ID")
+    path = os.path.abspath(VOICE_PATH)
+    folder = os.path.dirname(path)
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    if os.path.islink(path):
+        raise ValueError("voice preference is a symlink; choose a writable MEGA_SPEAK_VOICE_CONFIG")
+    with open(path + ".lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=folder, delete=False) as f:
+                tmp = f.name
+                f.write('# Selected in Mega Speak; --voice overrides this choice.\nvoice = ' + json.dumps(voice) + '\n')
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+            tmp = None
+        finally:
+            if tmp:
+                os.unlink(tmp)
 
 
 def run_cmd(argv, what):
@@ -362,10 +389,24 @@ def main():
     for k in CALLER:  # the forwarded caller, set by the ssh route and the server
         ap.add_argument(f"--caller-{k}", help=argparse.SUPPRESS)
     ap.add_argument("--list-emotions", action="store_true"); ap.add_argument("--print-config", action="store_true")
+    selection = ap.add_mutually_exclusive_group()
+    selection.add_argument("--voice-state", action="store_true", help="print the effective voice and preference path as JSON; no synthesis")
+    selection.add_argument("--set-voice", metavar="ID", help="save the app's default voice preference; no synthesis")
     ap.add_argument("--version", action="version", version=f"mega-speak {VERSION}")
     a = ap.parse_args()
 
+    if a.set_voice is not None:
+        if a.text or a.voice or a.out or a.dry_run:
+            ap.error("--set-voice is a settings operation; use it without speech options")
+        try:
+            save_voice(a.set_voice)
+        except (OSError, ValueError) as e:
+            sys.exit(f"mega-speak: cannot save voice: {e}")
     cfg, emotions, read = load_config()
+    if a.voice_state or a.set_voice is not None:
+        print(json.dumps({"voice": cfg["voice"], "preference_file": VOICE_PATH,
+                          "saved_voice": a.set_voice, "overridden": a.set_voice is not None and cfg["voice"] != a.set_voice}, ensure_ascii=False))
+        return
     for k in ("voice", "speed", "emotion", "instruction", "volume", "output_host"):
         if getattr(a, k) is not None:
             cfg[k] = getattr(a, k)

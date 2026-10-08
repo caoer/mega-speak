@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/caoer/mega-speak/internal/herdr"
 	"github.com/caoer/mega-speak/internal/mac"
+	"github.com/caoer/mega-speak/internal/voices"
 )
 
 const usage = `mega-speak-bar — Mega Speak in the menu bar: what was said aloud
@@ -35,6 +37,7 @@ type app struct {
 	log, cards, agents, terminal, local string
 	herdr                               herdr.Client
 	board                               *mac.Board
+	voicePicker                         *voicePicker
 	wake                                chan struct{}
 
 	mu    sync.Mutex
@@ -48,8 +51,14 @@ func main() {
 	a := &app{wake: make(chan struct{}, 1)}
 	var herdrBin string
 	var show bool
+	var showVoices bool
+	var speakBin, settings, importFavorites string
 	flag.Usage = func() { fmt.Fprint(os.Stderr, usage); flag.PrintDefaults() }
 	home, _ := os.UserHomeDir()
+	flag.StringVar(&speakBin, "speak", "mega-speak", "the mega-speak CLI used to read and save the chosen voice")
+	flag.StringVar(&settings, "settings-dir", filepath.Join(home, "Library/Application Support/MegaSpeak"), "persistent app preferences and cached voice media")
+	flag.StringVar(&importFavorites, "import-favorites", "", "merge a JSON array of voice IDs into app favorites, then exit")
+	flag.BoolVar(&showVoices, "show-voices", false, "open the voice selector at start")
 	flag.StringVar(&a.log, "log", filepath.Join(home, ".local/share/mega-speak/said.jsonl"), "the log mega-speak writes")
 	flag.StringVar(&a.cards, "cards", "", "folder of agent cards, <id>/<id>.md with role and session in frontmatter, for agent names")
 	flag.StringVar(&herdrBin, "herdr", "herdr", "the herdr CLI")
@@ -61,6 +70,39 @@ func main() {
 	if flag.NArg() > 0 {
 		flag.Usage()
 		os.Exit(2)
+	}
+	if importFavorites != "" {
+		b, err := os.ReadFile(importFavorites)
+		var ids []string
+		if err == nil {
+			err = json.Unmarshal(b, &ids)
+		}
+		if err == nil {
+			library, loadErr := voices.Load()
+			err = loadErr
+			valid := map[string]bool{}
+			for _, v := range library.Voices {
+				valid[v.ID] = true
+			}
+			for _, id := range ids {
+				if !valid[id] {
+					err = fmt.Errorf("unknown favorite voice: %s", id)
+					break
+				}
+			}
+		}
+		if err == nil {
+			var f *voices.Favorites
+			f, err = voices.ReadFavorites(filepath.Join(settings, "favorites.json"))
+			if err == nil {
+				err = f.Import(ids)
+			}
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("Imported %d favorite voices\n", len(ids))
+		return
 	}
 	a.herdr = herdr.Client{Bin: herdrBin}
 	host, _ := os.Hostname()
@@ -74,8 +116,25 @@ func main() {
 			{Title: "Emotion", Width: 82},
 		}, 800, 540)
 		a.board.OnOpen, a.board.OnClose, a.board.OnClick = a.opened, a.closed, a.clicked
+		var err error
+		a.voicePicker, err = newVoicePicker(speakBin, settings)
+		if err != nil {
+			log.Printf("voice picker: %v", err)
+		}
+		a.board.OnVoices = func() {
+			if a.voicePicker == nil {
+				a.board.Flash("音色库未能载入，请检查 Mega Speak 日志。")
+				return
+			}
+			a.voicePicker.window.Open()
+			a.voicePicker.window.Eval("window.refreshVoiceState?.()")
+			a.board.Close()
+		}
 		log.Printf("mega-speak-bar %s: %s, host %s", version, a.log, a.local)
 		go a.loop()
+		if showVoices && a.voicePicker != nil {
+			a.voicePicker.window.Open()
+		}
 		if show {
 			time.Sleep(time.Second) // the new icon takes its place in the menu bar first
 			a.board.Open()
