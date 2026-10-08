@@ -39,7 +39,21 @@ if launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then
 		# kickstart retains stale LWCR/BTM registration after an ad-hoc
 		# signature changes, which can leave a job in EX_CONFIG/spawn failed.
 		launchctl bootout "gui/$(id -u)/$label"
-		launchctl bootstrap "gui/$(id -u)" "$agent"
+		# The old job's teardown can briefly outlive bootout, especially
+		# from nix-darwin's asuser activation context. Retry that narrow
+		# registration window instead of leaving the app unloaded.
+		registered=false
+		for attempt in 1 2 3 4 5 6; do
+			if launchctl bootstrap "gui/$(id -u)" "$agent" 2>"$stage/bootstrap.err"; then
+				registered=true
+				break
+			fi
+			[ "$attempt" -eq 6 ] || sleep 1
+		done
+		if [ "$registered" != true ]; then
+			cat "$stage/bootstrap.err" >&2
+			exit 1
+		fi
 		echo "install-app: re-registered $label"
 	else
 		launchctl kickstart -k "gui/$(id -u)/$label"
