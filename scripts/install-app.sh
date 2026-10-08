@@ -6,8 +6,8 @@
 #             for no permission, so no stable identity is needed
 #   stamp     the source path and the executable's checksum, kept in
 #             Contents/Resources/source; the same stamp is a no-op
-#   restart   `launchctl kickstart -k` on the agent labelled with the bundle
-#             id, when launchd knows it
+#   restart   re-register the existing launch agent after replacing its
+#             ad-hoc signed bundle, refreshing macOS code requirements
 set -eu
 [ $# -eq 1 ] || { echo "usage: install-app.sh <MegaSpeak.app>" >&2; exit 2; }
 src=${1%/}
@@ -34,6 +34,15 @@ codesign --force --sign "${MEGA_SPEAK_SIGN_IDENTITY:--}" --identifier "$label" "
 mv "$stage/$name" "$dest"
 echo "install-app: $dest ← $src"
 if launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then
-	launchctl kickstart -k "gui/$(id -u)/$label"
-	echo "install-app: restarted $label"
+	agent=$HOME/Library/LaunchAgents/$label.plist
+	if [ -f "$agent" ]; then
+		# kickstart retains stale LWCR/BTM registration after an ad-hoc
+		# signature changes, which can leave a job in EX_CONFIG/spawn failed.
+		launchctl bootout "gui/$(id -u)/$label"
+		launchctl bootstrap "gui/$(id -u)" "$agent"
+		echo "install-app: re-registered $label"
+	else
+		launchctl kickstart -k "gui/$(id -u)/$label"
+		echo "install-app: restarted $label"
+	fi
 fi
