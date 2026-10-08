@@ -68,10 +68,9 @@ var alignRight, alignCenter = func() (int, int) {
 
 const iconSize = 15.0 // an icon's box; the symbol draws at 12 pt inside it
 
-// Board is a menu bar icon whose click opens a popover: a title with a note
-// beside it over a table with column headers, one row per Set row, each as
-// tall as its wrapped text. OnOpen runs on the main thread before the
-// popover shows, OnClose after it closed, OnClick with the row clicked.
+// Board owns the menu bar menu and the Inbox/History window. Rows wrap their
+// text, and optional row buttons archive or restore an entry. Callbacks run
+// on the main thread.
 type Board struct {
 	OnOpen, OnClose                                      func()
 	OnClick                                              func(row int)
@@ -80,14 +79,14 @@ type Board struct {
 	OnArchive                                            func(int)
 
 	// main thread only
-	item, pop, table, note, empty, menu, archiveAll objc.ID
-	cols                                            []Column
-	widths                                          []float64
-	rows                                            [][]Cell
-	heights                                         []float64 // each row's, measured at Set
-	meter                                           objc.ID   // a wrapping label that measures text
-	noteText                                        string
-	flashUntil                                      time.Time
+	item, window, table, note, empty, menu, archiveAll objc.ID
+	cols                                               []Column
+	widths                                             []float64
+	rows                                               [][]Cell
+	heights                                            []float64 // each row's, measured at Set
+	meter                                              objc.ID   // a wrapping label that measures text
+	noteText                                           string
+	flashUntil                                         time.Time
 }
 
 const (
@@ -102,8 +101,7 @@ var (
 )
 
 // boardClass is the Objective-C object the status button, the table and the
-// popover call: the button's toggle:, the table's data source, delegate and
-// click action, the popover's delegate.
+// window call: menu actions, table data/delegate and window lifecycle.
 func boardClass() objc.ID {
 	boardOnce.Do(func() {
 		cls, err := objc.RegisterClass("MegaSpeakBoard", objc.GetClass("NSObject"),
@@ -146,7 +144,6 @@ func boardClass() objc.ID {
 						theBoard.OnVoices()
 					}
 				}},
-				{Cmd: sel("toggle:"), Fn: func(_ objc.ID, _ objc.SEL, _ objc.ID) { theBoard.toggle() }},
 				{Cmd: sel("rowClicked:"), Fn: func(_ objc.ID, _ objc.SEL, tv objc.ID) {
 					if r := sendInt(tv, "clickedRow"); r >= 0 && r < len(theBoard.rows) && theBoard.OnClick != nil {
 						theBoard.OnClick(r)
@@ -183,7 +180,7 @@ func boardClass() objc.ID {
 	return boardTarget
 }
 
-// NewBoard puts the icon (an SF Symbol) in the menu bar with a w×h popover
+// NewBoard puts the icon (an SF Symbol) in the menu bar with a w×h window
 // titled title. There is one Board per process.
 func NewBoard(symbol, title string, cols []Column, w, h float64) *Board {
 	b := &Board{cols: cols}
@@ -299,12 +296,12 @@ func (b *Board) build(symbol, title string, w, h float64) {
 	send(b.empty, "setHidden:", true)
 	send(root, "addSubview:", b.empty)
 
-	b.pop = send(send(class("NSWindow"), "alloc"), "initWithContentRect:styleMask:backing:defer:", CGRect{0, 0, w, h}, uint64(3), uint64(2), false)
-	send(b.pop, "setTitle:", nsString("Mega Speak · Inbox"))
-	send(b.pop, "setReleasedWhenClosed:", false)
-	send(b.pop, "setContentView:", root)
-	send(b.pop, "setDelegate:", t)
-	send(b.pop, "center")
+	b.window = send(send(class("NSWindow"), "alloc"), "initWithContentRect:styleMask:backing:defer:", CGRect{0, 0, w, h}, uint64(3), uint64(2), false)
+	send(b.window, "setTitle:", nsString("Mega Speak · Inbox"))
+	send(b.window, "setReleasedWhenClosed:", false)
+	send(b.window, "setContentView:", root)
+	send(b.window, "setDelegate:", t)
+	send(b.window, "center")
 
 }
 
@@ -354,34 +351,25 @@ func (b *Board) Flash(s string) {
 	})
 }
 
-// Open shows the popover under the icon, frontmost.
+// Open shows the Inbox/History window, frontmost.
 func (b *Board) Open() { now(b.open) }
 
-// Close closes the popover.
-func (b *Board) Close() { now(func() { send(b.pop, "performClose:", objc.ID(0)) }) }
-
-func (b *Board) toggle() {
-	if sendBool(b.pop, "isVisible") {
-		send(b.pop, "performClose:", objc.ID(0))
-		return
-	}
-	b.open()
-}
+// Close closes the Inbox/History window.
+func (b *Board) Close() { now(func() { send(b.window, "performClose:", objc.ID(0)) }) }
 
 func (b *Board) open() {
 	if b.OnOpen != nil {
 		b.OnOpen()
 	}
 	send(send(class("NSApplication"), "sharedApplication"), "activateIgnoringOtherApps:", true)
-	send(b.pop, "makeKeyAndOrderFront:", objc.ID(0))
+	send(b.window, "makeKeyAndOrderFront:", objc.ID(0))
 	send(b.table, "scrollRowToVisible:", 0)
 }
 
-// WindowNumber is the open popover's window number, 0 when closed: what
-// `screencapture -l` takes.
+// WindowNumber identifies the app-owned Inbox/History window.
 func (b *Board) WindowNumber() int {
 	var n int
-	DoSync(func() { n = sendInt(b.pop, "windowNumber") })
+	DoSync(func() { n = sendInt(b.window, "windowNumber") })
 	return n
 }
 
@@ -546,10 +534,10 @@ func (b *Board) SetHistory(history bool) {
 		send(b.archiveAll, "setEnabled:", !history)
 		if history {
 			send(b.archiveAll, "setTitle:", nsString("历史记录"))
-			send(b.pop, "setTitle:", nsString("Mega Speak · History"))
+			send(b.window, "setTitle:", nsString("Mega Speak · History"))
 		} else {
 			send(b.archiveAll, "setTitle:", nsString("全部归档"))
-			send(b.pop, "setTitle:", nsString("Mega Speak · Inbox"))
+			send(b.window, "setTitle:", nsString("Mega Speak · Inbox"))
 		}
 	})
 }

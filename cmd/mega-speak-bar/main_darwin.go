@@ -22,13 +22,13 @@ import (
 	"github.com/caoer/mega-speak/internal/voices"
 )
 
-const usage = `mega-speak-bar — Mega Speak in the menu bar: what was said aloud
+const usage = `mega-speak-bar — Mega Speak in the menu bar: voice controls and an archivable speech inbox
 
 usage: mega-speak-bar [flags]
 
-The icon opens a panel with the log's lines, newest first: time, agent, text,
-emotion. A click on a line focuses the herdr pane of the agent that said it
-and brings the terminal that shows herdr forward.
+The icon opens a menu: Inbox, History, voice selection and speech settings.
+Inbox entries can be archived; History retains the original playback log.
+A click on a line focuses the herdr pane of the agent that said it.
 
 flags:
 `
