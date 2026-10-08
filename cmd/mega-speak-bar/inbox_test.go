@@ -44,6 +44,14 @@ func TestArchivePreservesLogAndIndividualLegacyEntries(t *testing.T) {
 	}
 }
 func TestSingleInstanceRedirectsViewAndReleasesLock(t *testing.T) {
+	// Nix's build HOME is intentionally unwritable. A short private home
+	// also keeps the Unix socket under Darwin's 104-byte path limit.
+	home, err := os.MkdirTemp(".", ".instance-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(home)
+	t.Setenv("HOME", home)
 	dir := t.TempDir()
 	lock, err := acquireInstance(dir, "inbox")
 	if err != nil || lock == nil {
