@@ -34,3 +34,11 @@ api_url = "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
 
 # [emotions]                                        # add or override presets
 # grumpy = "你用有点不耐烦、嘟囔的语气说。"
+
+# Optional local delivery preference (the menu bar writes speech.toml).
+# Combined with per-call --instruction; leave empty to follow the Agent.
+delivery_instruction = ""
+# Optional explicit synthesis context; normally pass --context per call.
+context = ""
+# Optional serial conversation group; never reuse across unrelated callers.
+section_id = ""

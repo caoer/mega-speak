@@ -43,8 +43,8 @@ mega-speak "你好，我是 Mega Speak。"
 the voice, default emotion, speed, volume, the API endpoint (standard speech key, or an Ark Agent Plan
 key), and where the key comes from. `mega-speak --print-config` shows what is in effect.
 
-The app saves only its selected voice to `~/.config/mega-speak/voice.toml`; it never rewrites credentials,
-emotion, speed or volume. Configuration order is system config, user config, the app's voice preference,
+The app saves only its selected voice to `~/.config/mega-speak/voice.toml`; it never rewrites
+credentials or other config files. Speech preferences are saved separately in `~/.config/mega-speak/speech.toml`. Configuration order is system config, user config, the app's voice preference, speech preferences,
 then `$MEGA_SPEAK_CONFIG`; command-line flags override them all. `MEGA_SPEAK_VOICE_CONFIG` selects a different
 preference path for an isolated app or test. `mega-speak --voice-state` reports the effective voice without
 loading a key or synthesizing; `mega-speak --set-voice ID` saves the preference without speaking.
@@ -89,3 +89,24 @@ Every line played is appended to `~/.local/share/mega-speak/said.jsonl`, which t
 Run `mega-speak-server <port> <token-file> <path-to-mega-speak>` on the Mac with the speaker. It listens
 on loopback only; put a tunnel or reverse proxy in front of it. On the other machines set
 `output_host`, `output_url` and `token_file` (config.example.toml). They need no Volcengine key.
+
+## Voice instructions and context
+
+The menu bar now opens a menu with **Inbox**, **History**, **选择音色…**, **设置…**, and **退出 Mega Speak**. In Settings, **播报偏好** is a free-form direction with editable presets for whispering, faster delivery, slower delivery and Sichuan dialect. Save applies to the next local or remotely requested utterance. Numeric speed and playback volume can also be saved; explicit caller flags override these numeric defaults. The local delivery direction is combined with the caller's instruction, with the local preference stated as the priority when they conflict.
+
+```sh
+mega-speak --instruction "你压低声音，用悄悄话的语气轻轻说。" "测试完成了。"
+mega-speak --instruction "语速快一些，但吐字清楚。" --context "用户今天很忙，只需要简短汇报。" "部署已经完成。"
+mega-speak --settings-state
+mega-speak --set-settings '{"delivery_instruction":"用悄悄话轻声说。","speed":1.0,"volume":80}'
+```
+
+`--context` carries explicit dialogue context (up to 1000 characters), and `--instruction` carries a direction (up to 300 characters). Both forward through HTTP and SSH. `--section-id ID` optionally groups serial synthesis requests into one provider-side conversation; give each conversation a unique ID and do not share it across unrelated agents. Context and section IDs are not automatically inferred or retained in the playback log.
+
+The API's `additions.context_texts` currently honors **only the first string**. Mega Speak combines explicit context, per-call direction and the user's local delivery preference into that one string, separate from the text to speak. The existing plan endpoint, `seed-tts-2.0` resource and JSON-encoded `additions` envelope remain unchanged. Directions are model-guided: their exact audible effect varies with the selected voice. See the official [V3 parameters](https://docs.volcengine.com/docs/DoubaoVoice/WebSocketBidirectionalStreaming-V3?lang=zh) and [2.0 context examples](https://docs.volcengine.com/docs/DoubaoVoice/SoundReplication20BestPractices?lang=zh).
+
+## Inbox and app lifecycle
+
+**归档** hides one utterance from Inbox. **全部归档** archives the currently listed Inbox entries. **History** retains every log entry, and **恢复** returns an archived entry to Inbox. Viewing a line does not automatically archive it. Archive decisions persist in `~/Library/Application Support/MegaSpeak/inbox.json`; archiving never modifies `said.jsonl`. New logs have UUIDs; older logs get stable identities based on their original content and byte position so repeated identical messages can be archived individually. Malformed archive state is reported instead of silently clearing the Inbox.
+
+One app instance per user owns `~/.cache/mega-speak-app/instance.lock`. A subsequent launch asks the existing app to open a view over a local Unix socket, then exits without adding another icon. `mega-speak-bar --show-settings` opens settings directly. Isolated UI testing must also set `--instance-dir`, `--settings-dir`, `--log`, `MEGA_SPEAK_SETTINGS_CONFIG` and `MEGA_SPEAK_VOICE_CONFIG` to scratch paths. Intentional Quit unloads the launch agent only if its PID owns this app instance, avoiding a KeepAlive relaunch; normal launch or login starts the app again.

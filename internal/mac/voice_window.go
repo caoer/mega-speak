@@ -18,7 +18,7 @@ type VoiceWindow struct {
 
 var voiceOnce sync.Once
 var voiceTarget objc.ID
-var voiceWindow *VoiceWindow
+var webWindows = map[objc.ID]*VoiceWindow{}
 
 func voiceClass() objc.ID {
 	voiceOnce.Do(func() {
@@ -40,12 +40,16 @@ func voiceClass() objc.ID {
 						return
 					}
 					body := send(message, "body")
-					if sendBool(body, "isKindOfClass:", class("NSString")) && voiceWindow.OnMessage != nil {
-						voiceWindow.OnMessage(goString(body))
+					if sendBool(body, "isKindOfClass:", class("NSString")) && webWindows[send(message, "webView")] != nil && webWindows[send(message, "webView")].OnMessage != nil {
+						webWindows[send(message, "webView")].OnMessage(goString(body))
 					}
 				}},
-				{Cmd: sel("windowWillClose:"), Fn: func(_ objc.ID, _ objc.SEL, _ objc.ID) {
-					voiceWindow.Eval("window.stopPreview?.()")
+				{Cmd: sel("windowWillClose:"), Fn: func(_ objc.ID, _ objc.SEL, notification objc.ID) {
+					for _, w := range webWindows {
+						if w.window == send(notification, "object") {
+							w.Eval("window.stopPreview?.()")
+						}
+					}
 				}},
 			})
 		if err != nil {
@@ -56,15 +60,16 @@ func voiceClass() objc.ID {
 	return voiceTarget
 }
 
-func NewVoiceWindow() *VoiceWindow {
+func NewVoiceWindow() *VoiceWindow { return NewWebWindow("Mega Speak · 音色", 1000, 740) }
+
+func NewWebWindow(title string, width, height float64) *VoiceWindow {
 	w := &VoiceWindow{}
-	voiceWindow = w
 	DoSync(func() {
 		target := voiceClass()
-		w.window = send(send(class("NSWindow"), "alloc"), "initWithContentRect:styleMask:backing:defer:", CGRect{0, 0, 1000, 740}, uint64(15), uint64(2), false)
-		send(w.window, "setTitle:", nsString("Mega Speak · 音色"))
+		w.window = send(send(class("NSWindow"), "alloc"), "initWithContentRect:styleMask:backing:defer:", CGRect{0, 0, width, height}, uint64(15), uint64(2), false)
+		send(w.window, "setTitle:", nsString(title))
 		send(w.window, "setReleasedWhenClosed:", false)
-		send(w.window, "setMinSize:", CGSize{700, 520})
+		send(w.window, "setMinSize:", CGSize{600, 480})
 		send(w.window, "setDelegate:", target)
 		send(w.window, "center")
 		controller := send(send(class("WKUserContentController"), "alloc"), "init")
@@ -72,7 +77,8 @@ func NewVoiceWindow() *VoiceWindow {
 		config := send(send(class("WKWebViewConfiguration"), "alloc"), "init")
 		send(config, "setUserContentController:", controller)
 		send(config, "setWebsiteDataStore:", send(class("WKWebsiteDataStore"), "nonPersistentDataStore"))
-		w.web = send(send(class("WKWebView"), "alloc"), "initWithFrame:configuration:", CGRect{0, 0, 1000, 740}, config)
+		w.web = send(send(class("WKWebView"), "alloc"), "initWithFrame:configuration:", CGRect{0, 0, width, height}, config)
+		webWindows[w.web] = w
 		send(w.web, "setAutoresizingMask:", uint64(18))
 		send(w.window, "setContentView:", w.web)
 	})
@@ -95,4 +101,13 @@ func (w *VoiceWindow) Open() {
 }
 func (w *VoiceWindow) Eval(script string) {
 	now(func() { send(w.web, "evaluateJavaScript:completionHandler:", nsString(script), objc.ID(0)) })
+}
+
+func anyWebWindowVisible() bool {
+	for _, w := range webWindows {
+		if sendBool(w.window, "isVisible") {
+			return true
+		}
+	}
+	return false
 }

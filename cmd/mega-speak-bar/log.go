@@ -18,6 +18,7 @@ import (
 
 // entry is what the panel reads from one line of the log.
 type entry struct {
+	ID          string    `json:"id"`
 	TS          time.Time `json:"ts"`
 	Text        string    `json:"text"`
 	Emotion     string    `json:"emotion"`

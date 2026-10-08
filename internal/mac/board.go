@@ -73,23 +73,25 @@ const iconSize = 15.0 // an icon's box; the symbol draws at 12 pt inside it
 // tall as its wrapped text. OnOpen runs on the main thread before the
 // popover shows, OnClose after it closed, OnClick with the row clicked.
 type Board struct {
-	OnOpen, OnClose func()
-	OnClick         func(row int)
-	OnVoices        func()
+	OnOpen, OnClose                                      func()
+	OnClick                                              func(row int)
+	OnVoices                                             func()
+	OnHistory, OnInbox, OnSettings, OnArchiveAll, OnQuit func()
+	OnArchive                                            func(int)
 
 	// main thread only
-	item, pop, table, note, empty objc.ID
-	cols                          []Column
-	widths                        []float64
-	rows                          [][]Cell
-	heights                       []float64 // each row's, measured at Set
-	meter                         objc.ID   // a wrapping label that measures text
-	noteText                      string
-	flashUntil                    time.Time
+	item, pop, table, note, empty, menu, archiveAll objc.ID
+	cols                                            []Column
+	widths                                          []float64
+	rows                                            [][]Cell
+	heights                                         []float64 // each row's, measured at Set
+	meter                                           objc.ID   // a wrapping label that measures text
+	noteText                                        string
+	flashUntil                                      time.Time
 }
 
 const (
-	boardHeader = 44.0 // the title line above the table
+	boardHeader = 78.0 // the title line above the table
 	cellPad     = 5.0  // above and below a cell's text
 )
 
@@ -105,8 +107,40 @@ var (
 func boardClass() objc.ID {
 	boardOnce.Do(func() {
 		cls, err := objc.RegisterClass("MegaSpeakBoard", objc.GetClass("NSObject"),
-			[]*objc.Protocol{objc.GetProtocol("NSTableViewDataSource"), objc.GetProtocol("NSTableViewDelegate"), objc.GetProtocol("NSPopoverDelegate")}, nil,
+			[]*objc.Protocol{objc.GetProtocol("NSTableViewDataSource"), objc.GetProtocol("NSTableViewDelegate"), objc.GetProtocol("NSWindowDelegate")}, nil,
 			[]objc.MethodDef{
+				{Cmd: sel("inbox:"), Fn: func(_ objc.ID, _ objc.SEL, _ objc.ID) {
+					if theBoard.OnInbox != nil {
+						theBoard.OnInbox()
+					}
+					theBoard.open()
+				}},
+				{Cmd: sel("history:"), Fn: func(_ objc.ID, _ objc.SEL, _ objc.ID) {
+					if theBoard.OnHistory != nil {
+						theBoard.OnHistory()
+					}
+					theBoard.open()
+				}},
+				{Cmd: sel("settings:"), Fn: func(_ objc.ID, _ objc.SEL, _ objc.ID) {
+					if theBoard.OnSettings != nil {
+						theBoard.OnSettings()
+					}
+				}},
+				{Cmd: sel("archiveAll:"), Fn: func(_ objc.ID, _ objc.SEL, _ objc.ID) {
+					if theBoard.OnArchiveAll != nil {
+						theBoard.OnArchiveAll()
+					}
+				}},
+				{Cmd: sel("archive:"), Fn: func(_ objc.ID, _ objc.SEL, button objc.ID) {
+					if theBoard.OnArchive != nil {
+						theBoard.OnArchive(sendInt(button, "tag"))
+					}
+				}},
+				{Cmd: sel("quit:"), Fn: func(_ objc.ID, _ objc.SEL, _ objc.ID) {
+					if theBoard.OnQuit != nil {
+						theBoard.OnQuit()
+					}
+				}},
 				{Cmd: sel("voices:"), Fn: func(_ objc.ID, _ objc.SEL, _ objc.ID) {
 					if theBoard.OnVoices != nil {
 						theBoard.OnVoices()
@@ -131,9 +165,9 @@ func boardClass() objc.ID {
 					}
 					return struct{ H float64 }{24}
 				}},
-				{Cmd: sel("popoverDidClose:"), Fn: func(_ objc.ID, _ objc.SEL, _ objc.ID) {
+				{Cmd: sel("windowWillClose:"), Fn: func(_ objc.ID, _ objc.SEL, _ objc.ID) {
 					// closed by Esc: hand the focus back to the app before this one
-					if app := send(class("NSApplication"), "sharedApplication"); sendBool(app, "isActive") && (voiceWindow == nil || !sendBool(voiceWindow.window, "isVisible")) {
+					if app := send(class("NSApplication"), "sharedApplication"); sendBool(app, "isActive") && !anyWebWindowVisible() {
 						send(app, "hide:", objc.ID(0))
 					}
 					if theBoard.OnClose != nil {
@@ -168,7 +202,22 @@ func (b *Board) build(symbol, title string, w, h float64) {
 	send(btn, "setImage:", img)
 	send(btn, "setToolTip:", nsString(title))
 	send(btn, "setTarget:", t)
-	send(btn, "setAction:", sel("toggle:"))
+	b.menu = send(send(class("NSMenu"), "alloc"), "initWithTitle:", nsString(title))
+	send(b.menu, "setAutoenablesItems:", false)
+	for _, item := range []struct{ title, action, key string }{
+		{"Inbox", "inbox:", ""}, {"History", "history:", ""},
+		{"", "", ""}, {"选择音色…", "voices:", ""}, {"设置…", "settings:", ","},
+		{"", "", ""}, {"退出 Mega Speak", "quit:", "q"},
+	} {
+		if item.title == "" {
+			send(b.menu, "addItem:", send(class("NSMenuItem"), "separatorItem"))
+			continue
+		}
+		mi := send(send(class("NSMenuItem"), "alloc"), "initWithTitle:action:keyEquivalent:", nsString(item.title), sel(item.action), nsString(item.key))
+		send(mi, "setTarget:", t)
+		send(b.menu, "addItem:", mi)
+	}
+	send(b.item, "setMenu:", b.menu)
 
 	root := send(send(send(class("NSView"), "alloc"), "initWithFrame:", CGRect{0, 0, w, h}), "autorelease")
 	// An opaque ground in the table's colour: on the translucent popover
@@ -188,8 +237,18 @@ func (b *Board) build(symbol, title string, w, h float64) {
 	b.note = label("", send(class("NSFont"), "systemFontOfSize:", 11.0), send(class("NSColor"), "secondaryLabelColor"))
 	send(b.note, "setAlignment:", alignRight)
 	send(b.note, "setLineBreakMode:", 4)
-	send(b.note, "setFrame:", CGRect{250, h - 29, w - 266, 16})
+	send(b.note, "setFrame:", CGRect{16, h - 65, w - 166, 16})
 	send(root, "addSubview:", b.note)
+
+	for i, item := range []struct{ title, action string }{{"Inbox", "inbox:"}, {"History", "history:"}, {"设置…", "settings:"}, {"全部归档", "archiveAll:"}} {
+		button := send(class("NSButton"), "buttonWithTitle:target:action:", nsString(item.title), t, sel(item.action))
+		x := 244.0 + float64(i)*90
+		send(button, "setFrame:", CGRect{x, h - 35, 88, 28})
+		send(root, "addSubview:", button)
+		if item.action == "archiveAll:" {
+			b.archiveAll = button
+		}
+	}
 
 	scroll := send(send(send(class("NSScrollView"), "alloc"), "initWithFrame:", CGRect{0, 0, w, h - boardHeader}), "autorelease")
 	send(scroll, "setHasVerticalScroller:", true)
@@ -240,13 +299,13 @@ func (b *Board) build(symbol, title string, w, h float64) {
 	send(b.empty, "setHidden:", true)
 	send(root, "addSubview:", b.empty)
 
-	vc := send(send(class("NSViewController"), "alloc"), "init")
-	send(vc, "setView:", root)
-	b.pop = send(send(class("NSPopover"), "alloc"), "init")
-	send(b.pop, "setBehavior:", 1) // NSPopoverBehaviorTransient: a click elsewhere closes it
-	send(b.pop, "setContentSize:", CGSize{w, h})
-	send(b.pop, "setContentViewController:", vc)
+	b.pop = send(send(class("NSWindow"), "alloc"), "initWithContentRect:styleMask:backing:defer:", CGRect{0, 0, w, h}, uint64(3), uint64(2), false)
+	send(b.pop, "setTitle:", nsString("Mega Speak · Inbox"))
+	send(b.pop, "setReleasedWhenClosed:", false)
+	send(b.pop, "setContentView:", root)
 	send(b.pop, "setDelegate:", t)
+	send(b.pop, "center")
+
 }
 
 // label is a one-line label in font, in fg when not 0.
@@ -302,7 +361,7 @@ func (b *Board) Open() { now(b.open) }
 func (b *Board) Close() { now(func() { send(b.pop, "performClose:", objc.ID(0)) }) }
 
 func (b *Board) toggle() {
-	if sendBool(b.pop, "isShown") {
+	if sendBool(b.pop, "isVisible") {
 		send(b.pop, "performClose:", objc.ID(0))
 		return
 	}
@@ -314,8 +373,7 @@ func (b *Board) open() {
 		b.OnOpen()
 	}
 	send(send(class("NSApplication"), "sharedApplication"), "activateIgnoringOtherApps:", true)
-	btn := send(b.item, "button")
-	send(b.pop, "showRelativeToRect:ofView:preferredEdge:", objc.Send[CGRect](btn, sel("bounds")), btn, 1) // NSRectEdgeMinY
+	send(b.pop, "makeKeyAndOrderFront:", objc.ID(0))
 	send(b.table, "scrollRowToVisible:", 0)
 }
 
@@ -323,11 +381,7 @@ func (b *Board) open() {
 // `screencapture -l` takes.
 func (b *Board) WindowNumber() int {
 	var n int
-	DoSync(func() {
-		if w := send(send(send(b.pop, "contentViewController"), "view"), "window"); w != 0 {
-			n = sendInt(w, "windowNumber")
-		}
-	})
+	DoSync(func() { n = sendInt(b.pop, "windowNumber") })
 	return n
 }
 
@@ -396,6 +450,18 @@ func (b *Board) cellView(row, i int) objc.ID {
 	}
 	c, w, h := b.rows[row][i], b.widths[i], b.heights[row]
 	v := send(send(send(class("NSView"), "alloc"), "initWithFrame:", CGRect{0, 0, w, h}), "autorelease")
+	if c.Icon == "archive-action" || c.Icon == "restore-action" {
+		title := "归档"
+		if c.Icon == "restore-action" {
+			title = "恢复"
+		}
+		button := send(class("NSButton"), "buttonWithTitle:target:action:", nsString(title), boardTarget, sel("archive:"))
+		send(button, "setFrame:", CGRect{0, (h - 28) / 2, w, 28})
+		send(button, "setTag:", row)
+		send(v, "addSubview:", button)
+		return v
+	}
+
 	if c.Tip != "" {
 		send(v, "setToolTip:", nsString(c.Tip))
 	}
@@ -473,4 +539,17 @@ func ActivateBundle(id string) bool {
 	}
 	send(send(apps, "firstObject"), "activateWithOptions:", uint(1<<1)) // NSApplicationActivateIgnoringOtherApps
 	return true
+}
+
+func (b *Board) SetHistory(history bool) {
+	now(func() {
+		send(b.archiveAll, "setEnabled:", !history)
+		if history {
+			send(b.archiveAll, "setTitle:", nsString("历史记录"))
+			send(b.pop, "setTitle:", nsString("Mega Speak · History"))
+		} else {
+			send(b.archiveAll, "setTitle:", nsString("全部归档"))
+			send(b.pop, "setTitle:", nsString("Mega Speak · Inbox"))
+		}
+	})
 }

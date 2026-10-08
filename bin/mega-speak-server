@@ -2,7 +2,7 @@
 """mega-speak-server — the speak action, for callers on other hosts.
 
   POST /speak   Authorization: Bearer <token>
-                {"text", "voice"?, "speed"?, "emotion"?, "instruction"?, "volume"?, "dry_run"?,
+                {"text", "voice"?, "speed"?, "emotion"?, "instruction"?, "context"?, "section_id"?, "volume"?, "dry_run"?,
                  "host"?, "session"?, "pane"?}
   -> runs `mega-speak --local [flags] -` with the text on stdin (argv list, no shell) and answers
      200 {"ok": true, "stderr": ...} or 502 {"ok": false, "rc": N, "stderr": ...}.
@@ -29,7 +29,7 @@ CALLER = {"host": r"[A-Za-z0-9][A-Za-z0-9.-]{0,63}", "session": r"[A-Za-z0-9_-]{
 
 def flags(req):
     """Validated mega-speak flags for a request body, or raise ValueError."""
-    allowed = {"text", "voice", "speed", "emotion", "instruction", "volume", "dry_run", *CALLER}
+    allowed = {"text", "voice", "speed", "emotion", "instruction", "context", "section_id", "volume", "dry_run", *CALLER}
     if not isinstance(req, dict) or set(req) - allowed:
         raise ValueError(f"allowed keys: {sorted(allowed)}")
     text = req.get("text")
@@ -56,9 +56,15 @@ def flags(req):
         out.append(f"--volume={v}")
     if "instruction" in req:
         i = req["instruction"]
-        if not isinstance(i, str) or len(i) > MAX_INSTRUCTION or any(ord(c) < 32 for c in i):
+        if not isinstance(i, str) or len(i) > MAX_INSTRUCTION or any(ord(c) < 32 and c not in "\n\t" for c in i):
             raise ValueError(f"instruction: up to {MAX_INSTRUCTION} characters, no control characters")
         out.append(f"--instruction={i}")  # = form: a value never parses as an option
+    for k, limit in (("context", 1000), ("section_id", 100)):
+        if k in req:
+            value = req[k]
+            if not isinstance(value, str) or len(value) > limit or any(ord(c) < 32 and c not in "\n\t" for c in value):
+                raise ValueError(f"{k}: up to {limit} characters, no control characters")
+            out.append(f"--{k.replace('_', '-')}={value}")
     if "dry_run" in req:
         if not isinstance(req["dry_run"], bool):
             raise ValueError("dry_run: boolean")

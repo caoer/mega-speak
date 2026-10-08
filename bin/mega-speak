@@ -11,7 +11,8 @@
 
 Config is TOML, read in this order, each file overriding the one before key by key:
 /etc/mega-speak/config.toml, ~/.config/mega-speak/config.toml,
-~/.config/mega-speak/voice.toml (the app's selection), $MEGA_SPEAK_CONFIG. Flags
+~/.config/mega-speak/voice.toml (the app's selection),
+~/.config/mega-speak/speech.toml (delivery preferences), $MEGA_SPEAK_CONFIG. Flags
 override all of them. config.example.toml in the repository documents every key.
 
 The API key comes from $MEGA_SPEAK_API_KEY, else the file api_key_file names, else what the
@@ -30,8 +31,9 @@ import argparse, base64, datetime, fcntl, http.client, json, math, os, re, shlex
 
 VERSION = "@version@"
 WAKE_HZ = 40  # the wake tone's pitch: below what a small speaker makes audible at a low level
+SETTINGS_PATH = os.path.expanduser(os.environ.get("MEGA_SPEAK_SETTINGS_CONFIG", "~/.config/mega-speak/speech.toml"))
 VOICE_PATH = os.path.expanduser(os.environ.get("MEGA_SPEAK_VOICE_CONFIG", "~/.config/mega-speak/voice.toml"))
-CONFIG_PATHS = ["/etc/mega-speak/config.toml", "~/.config/mega-speak/config.toml", VOICE_PATH, os.environ.get("MEGA_SPEAK_CONFIG", "")]
+CONFIG_PATHS = ["/etc/mega-speak/config.toml", "~/.config/mega-speak/config.toml", VOICE_PATH, SETTINGS_PATH, os.environ.get("MEGA_SPEAK_CONFIG", "")]
 LOG_PATH = os.path.expanduser(os.environ.get("MEGA_SPEAK_LOG", "~/.local/share/mega-speak/said.jsonl"))
 SAMPLE_RATE = 24000
 # the caller fields a forwarded request may carry; mega-speak-server checks the same patterns
@@ -42,6 +44,9 @@ DEFAULTS = {
     "speed": 1.0,             # 0.5–2.0, sent as speech_rate
     "emotion": "neutral",     # a key of [emotions]
     "instruction": "",        # free-text voice instruction; overrides the emotion's
+    "delivery_instruction": "", # local delivery preference, combined with per-call instructions
+    "context": "",           # explicit per-call dialogue context; never inferred from the said log
+    "section_id": "",        # opt-in context group; unrelated callers never share it
     "volume": 100,            # playback volume 0–100
     "lead_in_ms": 1000,       # the least wake tone played before the speech
     "lead_in_db": -40.0,      # its peak level in dBFS; -inf plays digital silence instead
@@ -116,6 +121,83 @@ def save_voice(voice):
                 os.unlink(tmp)
 
 
+def validate_speech_settings(settings):
+    allowed = {"delivery_instruction", "speed", "volume"}
+    if not isinstance(settings, dict) or set(settings) - allowed:
+        raise ValueError("settings keys: delivery_instruction, speed, volume")
+    if "delivery_instruction" in settings:
+        value = settings["delivery_instruction"]
+        if not isinstance(value, str) or len(value) > 300 or any(ord(c) < 32 and c not in "\n\t" for c in value):
+            raise ValueError("delivery_instruction: up to 300 characters")
+    if "speed" in settings:
+        v = settings["speed"]
+        if isinstance(v, bool) or not isinstance(v, (float, int)) or not 0.5 <= v <= 2.0:
+            raise ValueError("speed: 0.5..2.0")
+    if "volume" in settings:
+        v = settings["volume"]
+        if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= 100:
+            raise ValueError("volume: integer 0..100")
+    return settings
+
+
+def save_speech_settings(settings):
+    validate_speech_settings(settings)
+    path = os.path.abspath(SETTINGS_PATH)
+    folder = os.path.dirname(path)
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    if os.path.islink(path):
+        raise ValueError("speech preference is a symlink; choose a writable MEGA_SPEAK_SETTINGS_CONFIG")
+    with open(path + ".lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        saved = {}
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                saved = tomllib.load(f)
+        validate_speech_settings(saved)
+        saved.update(settings)
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=folder, delete=False) as f:
+                tmp = f.name
+                f.write("# Delivery preferences saved in Mega Speak settings.\n")
+                for k, v in saved.items():
+                    f.write(k + " = " + json.dumps(v, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+            tmp = None
+        finally:
+            if tmp:
+                os.unlink(tmp)
+    return saved
+
+
+def synthesis_request(cfg, text, fmt):
+    req = {"text": text, "speaker": cfg["voice"],
+           "audio_params": {"format": fmt, "sample_rate": SAMPLE_RATE,
+                            "speech_rate": round((float(cfg["speed"]) - 1) * 100)}}
+    instruction = cfg.get("instruction", "").strip()
+    context = cfg.get("context", "").strip()
+    delivery = cfg.get("delivery_instruction", "").strip()
+    # Volcengine currently honors only context_texts[0]. Join auxiliary inputs
+    # into one string; keep them out of the spoken text and billed characters.
+    parts = []
+    if context:
+        parts.append("对话上下文：" + context)
+    if instruction:
+        parts.append(instruction)
+    if delivery:
+        parts.append("播报偏好（优先遵循）：" + delivery)
+    additions = {}
+    if parts:
+        additions["context_texts"] = ["\n".join(parts)]
+    if cfg.get("section_id"):
+        additions["section_id"] = cfg["section_id"]
+    if additions:
+        req["additions"] = json.dumps(additions, ensure_ascii=False)
+    return {"user": {"uid": "mega-speak"}, "req_params": req}
+
+
 def run_cmd(argv, what):
     try:
         out = subprocess.run(argv, capture_output=True, text=True, timeout=30)
@@ -144,12 +226,7 @@ def synthesize(cfg, text, fmt, on_audio):
     conn = http.client.HTTPSConnection(u.netloc, timeout=60)
     th = threading.Thread(target=conn.connect); th.start()  # the TLS handshake overlaps the key lookup
     key = api_key(cfg); th.join()
-    speech_rate = max(-50, min(100, round((float(cfg["speed"]) - 1) * 100)))
-    req = {"text": text, "speaker": cfg["voice"],
-           "audio_params": {"format": fmt, "sample_rate": SAMPLE_RATE, "speech_rate": speech_rate}}
-    if cfg["instruction"]:
-        req["additions"] = json.dumps({"context_texts": [cfg["instruction"]]}, ensure_ascii=False)
-    body = json.dumps({"user": {"uid": "mega-speak"}, "req_params": req}, ensure_ascii=False).encode()
+    body = json.dumps(synthesis_request(cfg, text, fmt), ensure_ascii=False).encode()
     auth = {"X-Api-App-Id": cfg["app_id"], "X-Api-Access-Key": key} if cfg["app_id"] else {"X-Api-Key": key}
     conn.request("POST", u.path, body=body, headers={
         **auth, "X-Api-Resource-Id": cfg["resource_id"], "X-Api-Request-Id": str(uuid.uuid4()),
@@ -381,6 +458,8 @@ def main():
     ap.add_argument("--voice"); ap.add_argument("--speed", type=float, help="0.5–2.0")
     ap.add_argument("--emotion", help="preset name, see --list-emotions")
     ap.add_argument("--instruction", help="free-text voice instruction (Chinese works best); overrides --emotion")
+    ap.add_argument("--context", help="dialogue context for expressive TTS; auxiliary text, not spoken")
+    ap.add_argument("--section-id", help="opt-in serial TTS context group; use a unique ID per conversation")
     ap.add_argument("--volume", type=int, help="playback volume 0–100")
     ap.add_argument("--out", metavar="FILE", help="synthesize to FILE (.mp3/.wav/.ogg/.pcm) and play nothing")
     ap.add_argument("--output-host", help="host whose speaker plays (default from config)")
@@ -390,6 +469,8 @@ def main():
         ap.add_argument(f"--caller-{k}", help=argparse.SUPPRESS)
     ap.add_argument("--list-emotions", action="store_true"); ap.add_argument("--print-config", action="store_true")
     selection = ap.add_mutually_exclusive_group()
+    selection.add_argument("--settings-state", action="store_true", help="print effective speech settings as JSON; no synthesis")
+    selection.add_argument("--set-settings", metavar="JSON", help="save delivery_instruction, speed and/or volume; no synthesis")
     selection.add_argument("--voice-state", action="store_true", help="print the effective voice and preference path as JSON; no synthesis")
     selection.add_argument("--set-voice", metavar="ID", help="save the app's default voice preference; no synthesis")
     ap.add_argument("--version", action="version", version=f"mega-speak {VERSION}")
@@ -402,14 +483,35 @@ def main():
             save_voice(a.set_voice)
         except (OSError, ValueError) as e:
             sys.exit(f"mega-speak: cannot save voice: {e}")
+    saved_settings = None
+    if a.set_settings is not None:
+        if a.text or a.out or a.dry_run:
+            ap.error("--set-settings is a settings operation; use it without speech options")
+        try:
+            saved_settings = save_speech_settings(json.loads(a.set_settings))
+        except (OSError, ValueError) as e:
+            sys.exit(f"mega-speak: cannot save settings: {e}")
     cfg, emotions, read = load_config()
+    if a.settings_state or a.set_settings is not None:
+        keys = ("delivery_instruction", "speed", "volume")
+        print(json.dumps({**{k: cfg[k] for k in keys}, "preference_file": SETTINGS_PATH,
+                          "overridden": [k for k, v in (saved_settings or {}).items() if cfg[k] != v]}, ensure_ascii=False))
+        return
     if a.voice_state or a.set_voice is not None:
         print(json.dumps({"voice": cfg["voice"], "preference_file": VOICE_PATH,
                           "saved_voice": a.set_voice, "overridden": a.set_voice is not None and cfg["voice"] != a.set_voice}, ensure_ascii=False))
         return
-    for k in ("voice", "speed", "emotion", "instruction", "volume", "output_host"):
+    for k in ("voice", "speed", "emotion", "instruction", "context", "section_id", "volume", "output_host"):
         if getattr(a, k) is not None:
             cfg[k] = getattr(a, k)
+    try:
+        validate_speech_settings({k: cfg[k] for k in ("delivery_instruction", "speed", "volume")})
+        for k, limit in (("instruction", 300), ("context", 1000), ("section_id", 100)):
+            v = cfg[k]
+            if not isinstance(v, str) or len(v) > limit or any(ord(c) < 32 and c not in "\n\t" for c in v):
+                raise ValueError(f"{k}: up to {limit} characters, no control characters")
+    except ValueError as e:
+        ap.error(str(e))
     if a.list_emotions:
         for k, v in emotions.items():
             print(f"{k:12} {v}")
@@ -434,19 +536,19 @@ def main():
     if a.out:
         stats = write_file(cfg, text, a.out)
     elif a.local or cfg["output_host"] in ("", short_host()):
-        said = {"text": text, "emotion": emotion, **({"instruction": cfg["instruction"]} if emotion == "custom" else {}),
-                "voice": cfg["voice"], **caller(a), "dry_run": a.dry_run}
+        said = {"id": str(uuid.uuid4()), "text": text, "emotion": emotion, **({"instruction": cfg["instruction"]} if emotion == "custom" else {}),
+                "voice": cfg["voice"], **({"delivery_instruction": cfg["delivery_instruction"]} if cfg["delivery_instruction"] else {}), **caller(a), "dry_run": a.dry_run}
         stats = speak_local(cfg, text, a.dry_run, said)
     else:
         # forward only what the caller set: the output host's config owns every other choice
-        opts = {k: getattr(a, k) for k in ("voice", "speed", "emotion", "instruction", "volume") if getattr(a, k) is not None}
+        opts = {k: getattr(a, k) for k in ("voice", "speed", "emotion", "instruction", "context", "section_id", "volume") if getattr(a, k) is not None}
         who = caller(a)
         token = http_token(cfg) if cfg["output_url"] else None
         if token:
             speak_http(cfg, text, opts, a.dry_run, token, who)
         if not cfg["output_ssh"]:
             sys.exit(f"mega-speak: output_host is {cfg['output_host']}, but neither output_url with a token nor output_ssh is set")
-        fwd = [cfg["remote_cmd"], "--local"] + [f"--{k}={v}" for k, v in opts.items()]
+        fwd = [cfg["remote_cmd"], "--local"] + [f"--{k.replace('_', '-')}={v}" for k, v in opts.items()]
         fwd += [f"--caller-{k}={v}" for k, v in who.items()] + (["--dry-run"] if a.dry_run else []) + ["-"]
         speak_ssh(cfg, text, fwd, a.dry_run)
     print(f"mega-speak: voice={cfg['voice']} emotion={emotion} "
