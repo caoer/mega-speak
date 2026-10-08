@@ -12,6 +12,7 @@
 const data=JSON.parse(document.getElementById('catalog').textContent),voices=data.voices;
 const $=id=>document.getElementById(id),native=!!window.webkit?.messageHandlers?.megaSpeak;
 const pending=new Map(),favoriteBusy=new Set();let requestSeq=0,choosePending=false,current='',favorites=new Set(),stateReady=!native,scope='favorites',audio=null,playing='',playToken=0;
+const languageCode=code=>code==='zh'?'zh-cn':code;
 const languageNames={'zh':'中文','ar':'阿拉伯语','fil':'菲律宾语','ms':'马来语','mx':'墨西哥音色','th':'泰语','vi':'越南语','zh-cn':'中文','en':'英语','ja':'日语','id':'印尼语','es-mx':'西班牙语（墨西哥）','pt-br':'葡萄牙语（巴西）','de':'德语','fr':'法语','ko':'韩语','it':'意大利语','ru':'俄语'};
 const capture=data.captured||data.metadata?.captured_at?.slice(0,10)||'2026-10-08';
 $('date').textContent='目录快照 · '+capture.slice(0,10);
@@ -27,8 +28,8 @@ window.receiveReply=function(reply){const p=pending.get(reply.id);if(!p)return;c
 window.refreshVoiceState=async()=>{if(!native)return;try{await request('state');$('retry').style.display='none';status('收藏与当前音色已读取。')}catch(e){stateReady=false;render();status(e.message,true);$('retry').style.display='inline-block'}};
 function updateCurrent(){const v=voices.find(v=>v.voice_id===current);$('current-name').textContent=v?.name||(current?'目录外的音色':(native?'尚未读取':'默认音色快照'));$('current-id').textContent=current}
 function initializeSelect(id,values,caption){const select=$(id);const empty=node('option',caption);empty.value='';select.append(empty);for(const value of [...new Set(values.filter(Boolean))].sort((a,b)=>a.localeCompare(b,'zh'))){const option=node('option',id==='language'?(languageNames[value]||value):value);option.value=value;select.append(option)}select.addEventListener('change',render)}
-initializeSelect('gender',voices.map(v=>v.gender),'全部性别');initializeSelect('age',voices.map(v=>v.age),'全部年龄');initializeSelect('language',voices.flatMap(v=>v.languages.map(l=>l.Language)),'全部语言');initializeSelect('category',voices.flatMap(v=>v.categories),'全部分类');
-function matches(v){const q=$('search').value.trim().toLowerCase();const hay=[v.name,v.voice_id,v.description,v.gender,v.age,...v.categories,...v.labels,...v.tags,...v.languages.map(l=>languageNames[l.Language]||l.Language)].join(' ').toLowerCase();return(scope!=='favorites'||favorites.has(v.voice_id))&&(!q||hay.includes(q))&&(!$('gender').value||v.gender===$('gender').value)&&(!$('age').value||v.age===$('age').value)&&(!$('language').value||v.languages.some(l=>l.Language===$('language').value))&&(!$('category').value||v.categories.includes($('category').value))}
+initializeSelect('gender',voices.map(v=>v.gender),'全部性别');initializeSelect('age',voices.map(v=>v.age),'全部年龄');initializeSelect('language',voices.flatMap(v=>v.languages.map(l=>languageCode(l.Language))),'全部语言');initializeSelect('category',voices.flatMap(v=>v.categories),'全部分类');
+function matches(v){const q=$('search').value.trim().toLowerCase();const hay=[v.name,v.voice_id,v.description,v.gender,v.age,...v.categories,...v.labels,...v.tags,...v.languages.map(l=>languageNames[l.Language]||l.Language)].join(' ').toLowerCase();return(scope!=='favorites'||favorites.has(v.voice_id))&&(!q||hay.includes(q))&&(!$('gender').value||v.gender===$('gender').value)&&(!$('age').value||v.age===$('age').value)&&(!$('language').value||v.languages.some(l=>languageCode(l.Language)===$('language').value))&&(!$('category').value||v.categories.includes($('category').value))}
 function render(){
  $('favorites').textContent='我的收藏 · '+voices.filter(v=>favorites.has(v.voice_id)).length;$('all').textContent='全部音色 · '+voices.length;
  $('favorites').setAttribute('aria-pressed',String(scope==='favorites'));$('all').setAttribute('aria-pressed',String(scope==='all'));
