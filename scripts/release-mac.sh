@@ -10,13 +10,18 @@
 #   sign     $MEGA_SIGN (mega-update scripts/sign-macos.sh): 南山图 Developer ID,
 #            hardened runtime, notarized and stapled, app and dmg
 #   dmg      Mega-Speak-X.Y.Z.dmg with an Applications link, and its sha256
-#   publish  page-file upload, then page-data put release.megaspeak-mac
-#            {version, url, sha256, notes, min_macos}; a dry run prints both
+#   publish  $MEGA_PUBLISH (mega-update scripts/page-publish.sh): the dmg
+#            uploaded and its stored sha256 checked, then release.megaspeak-mac
+#            {version, url, sha256, notes, min_macos} put and read back, each
+#            call retried over a line that drops; a dry run prints both
 #
 # Env:
 #   MEGA_SPEAK_TOKEN_FILE  the page's app-staging viewer token (0600 file); baked
 #                          into the menu bar app, never printed
 #   MEGA_SIGN              the signer (default ../mega-update/scripts/sign-macos.sh)
+#   MEGA_PUBLISH           the publisher (default page-publish.sh beside MEGA_SIGN)
+#   PUBLISH_VIA            an ssh host to publish from, for a Mac whose own uploads
+#                          to page.sui.pics drop (page-publish.sh says what it needs)
 #   MEGA_SPEAK_PYTHON      a python with PyInstaller (default: a uv venv in $OUT)
 #   OUT                    work folder (default ./out.noindex: Spotlight skips it,
 #                          so LaunchServices never registers a staging build)
@@ -45,6 +50,8 @@ sign=${MEGA_SIGN:-$repo/../mega-update/scripts/sign-macos.sh}
 token_file=${MEGA_SPEAK_TOKEN_FILE:?set MEGA_SPEAK_TOKEN_FILE to the app-staging token file}
 [ -s "$token_file" ] || { echo "release-mac: $token_file is empty" >&2; exit 2; }
 [ -f "$sign" ] || { echo "release-mac: no signer at $sign (set MEGA_SIGN)" >&2; exit 2; }
+publish=${MEGA_PUBLISH:-$(dirname "$sign")/page-publish.sh}
+[ -f "$publish" ] || { echo "release-mac: no publisher at $publish (set MEGA_PUBLISH)" >&2; exit 2; }
 
 commit=$(git rev-parse --short HEAD)
 if ! $dry; then
@@ -99,15 +106,14 @@ echo "release-mac: $dmg sha256 $sum"
 
 # --- publish -------------------------------------------------------------------
 notes=${NOTES:-}
-upload=(page-file upload "$SLUG" "$dmg" --name "$(basename "$dmg")" --type application/x-apple-diskimage)
+upload=(sh "$publish" upload "$SLUG" "$dmg" "$(basename "$dmg")" application/x-apple-diskimage)
 if $dry; then
 	echo "dry run, not run: ${upload[*]}"
-	echo "dry run, not run: page-data put $SLUG $KEY --schema release-feed@1 --data {version:$short, url:/f/$SLUG/<id>, sha256:$sum, notes, min_macos:$MIN_MACOS}"
+	echo "dry run, not run: page-publish.sh put $SLUG $KEY release-feed@1 {version:$short, url:/f/$SLUG/<id>, sha256:$sum, notes, min_macos:$MIN_MACOS}"
 	exit 0
 fi
-id=$("${upload[@]}" | jq -r '[.. | objects | .id? // empty][0]')
-[ -n "$id" ] && [ "$id" != null ] || { echo "release-mac: the upload printed no file id" >&2; exit 1; }
+id=$("${upload[@]}")
 data=$(jq -cn --arg v "$short" --arg u "/f/$SLUG/$id" --arg s "$sum" --arg n "$notes" --arg m "$MIN_MACOS" \
 	'{version: $v, url: $u, sha256: $s, notes: $n, min_macos: $m}')
-page-data put "$SLUG" "$KEY" --schema release-feed@1 --data "$data"
+sh "$publish" put "$SLUG" "$KEY" release-feed@1 "$data"
 echo "release-mac: published $ver: $data"

@@ -45,7 +45,9 @@ Homebrew (Apple silicon, macOS 14+): the CLI and `mega-speak-server` built by Py
 `Contents/Resources/defaults.toml` points them at our voice service. It is signed with the 南山图
 Developer ID, notarized and stapled, packed in a dmg, uploaded to the friends' page and announced in
 its feed record `release.megaspeak-mac`; the app checks that feed at launch and daily and offers
-**更新 / 跳过此版本 / 稍后**. `--dry-run` builds and signs but publishes nothing. On first launch with no key
+**更新 / 跳过此版本 / 稍后**. Publishing goes through mega-update's `scripts/page-publish.sh` (retried, the feed put only after the
+upload's sha256 matches; `PUBLISH_VIA=<ssh host>` publishes from another host). `--dry-run` builds and
+signs but publishes nothing. On first launch with no key
 the settings window opens at **语音钥匙**; the key typed there is saved 0600 in
 `~/.config/mega-speak/api-key` (`mega-speak --set-key` reads it from stdin, `--key-state` says where the key
 comes from, never the key). An explicit `MEGA_SPEAK_API_KEY`, `api_key_file` or `api_key_cmd` wins over it.
