@@ -37,6 +37,22 @@ mega-speak --dry-run "你好，我是 Mega Speak。"
 mega-speak "你好，我是 Mega Speak。"
 ```
 
+### The friends' build (Mega Speak.app)
+
+`scripts/release-mac.sh vX.Y.Z` builds a self-contained `Mega Speak.app` for Macs with no Python or
+Homebrew (Apple silicon, macOS 14+): the CLI and `mega-speak-server` built by PyInstaller
+(`packaging/pyinstaller.spec`) sit beside the menu bar app in `Contents/MacOS`, and
+`Contents/Resources/defaults.toml` points them at our voice service. It is signed with the 南山图
+Developer ID, notarized and stapled, packed in a dmg, uploaded to the friends' page and announced in
+its feed record `release.megaspeak-mac`; the app checks that feed at launch and daily and offers
+**更新 / 跳过此版本 / 稍后**. `--dry-run` builds and signs but publishes nothing. On first launch with no key
+the settings window opens at **语音钥匙**; the key typed there is saved 0600 in
+`~/.config/mega-speak/api-key` (`mega-speak --set-key` reads it from stdin, `--key-state` says where the key
+comes from, never the key). An explicit `MEGA_SPEAK_API_KEY`, `api_key_file` or `api_key_cmd` wins over it.
+For agents to call it, put the bundled CLI on PATH:
+`sudo ln -sf "/Applications/Mega Speak.app/Contents/MacOS/mega-speak" /usr/local/bin/mega-speak`.
+The nix build sets no channel, so it never checks a feed.
+
 ## Configure
 
 `~/.config/mega-speak/config.toml`; [config.example.toml](config.example.toml) explains every key:

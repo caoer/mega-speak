@@ -18,9 +18,10 @@ buildGoModule rec {
       ./internal
       ./packaging
       ./scripts
+      ./vendor
     ];
   };
-  vendorHash = "sha256-ifOTC+RonIZfCYx973+Tr4LSduZyjDjJl1BDvRKhFck=";
+  vendorHash = null; # vendor/: mega-update is a private module the build sandbox cannot fetch
   subPackages = [ "cmd/mega-speak-bar" ];
   env.CGO_ENABLED = "0";
   ldflags = [

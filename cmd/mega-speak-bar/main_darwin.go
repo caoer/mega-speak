@@ -64,7 +64,7 @@ func main() {
 	var speakBin, settings, importFavorites string
 	flag.Usage = func() { fmt.Fprint(os.Stderr, usage); flag.PrintDefaults() }
 	home, _ := os.UserHomeDir()
-	flag.StringVar(&speakBin, "speak", "mega-speak", "the mega-speak CLI used to read and save the chosen voice")
+	flag.StringVar(&speakBin, "speak", defaultSpeak(), "the mega-speak CLI used to read and save the chosen voice")
 	flag.StringVar(&settings, "settings-dir", filepath.Join(home, "Library/Application Support/MegaSpeak"), "persistent app preferences and cached voice media")
 	flag.StringVar(&importFavorites, "import-favorites", "", "merge a JSON array of voice IDs into app favorites, then exit")
 	flag.BoolVar(&showSettings, "show-settings", false, "open speech settings at start")
@@ -230,7 +230,9 @@ func main() {
 		}()
 		log.Printf("mega-speak-bar %s: %s, host %s", version, a.log, a.local)
 		go a.loop()
-		if showSettings {
+		startUpdates(filepath.Join(settings, "update"))
+		// First run on a Mac with no key: open settings at the key field.
+		if showSettings || needsKey(speakBin) {
 			a.board.OnSettings()
 		}
 		if showVoices && a.voicePicker != nil {
@@ -243,6 +245,29 @@ func main() {
 			log.Printf("panel window %d", a.board.WindowNumber())
 		}
 	})
+}
+
+// defaultSpeak is the CLI beside this executable in Mega Speak.app, else
+// mega-speak on PATH.
+func defaultSpeak() string {
+	if exe := executable(); exe != "" {
+		sibling := filepath.Join(filepath.Dir(exe), "mega-speak")
+		if fi, err := os.Stat(sibling); err == nil && !fi.IsDir() {
+			return sibling
+		}
+	}
+	return "mega-speak"
+}
+
+// needsKey reports whether the CLI has no voice key from any source.
+func needsKey(cli string) bool {
+	out, err := exec.Command(cli, "--key-state").Output()
+	if err != nil {
+		log.Printf("key state: %v", err)
+		return false
+	}
+	var s struct{ Source string }
+	return json.Unmarshal(out, &s) == nil && s.Source == "none"
 }
 
 // opened renders the log at once with the last known panes, then asks herdr.

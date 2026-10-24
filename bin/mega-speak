@@ -13,10 +13,12 @@ Config is TOML, read in this order, each file overriding the one before key by k
 /etc/mega-speak/config.toml, ~/.config/mega-speak/config.toml,
 ~/.config/mega-speak/voice.toml (the app's selection),
 ~/.config/mega-speak/speech.toml (delivery preferences), $MEGA_SPEAK_CONFIG. Flags
-override all of them. config.example.toml in the repository documents every key.
+override all of them. config.example.toml in the repository documents every key. The CLI
+bundled in Mega Speak.app reads Contents/Resources/defaults.toml before all of them.
 
 The API key comes from $MEGA_SPEAK_API_KEY, else the file api_key_file names, else what the
-command api_key_cmd prints; mega-speak never stores it.
+command api_key_cmd prints, else the key saved by `--set-key` (typed into the app's settings)
+in ~/.config/mega-speak/api-key. `--key-state` says which one is in use.
 
 Playback is on this host unless output_host names another one. Then the text goes to that
 host's mega-speak-server at output_url (bearer token from token_file or token_cmd), or over
@@ -33,7 +35,13 @@ VERSION = "@version@"
 WAKE_HZ = 40  # the wake tone's pitch: below what a small speaker makes audible at a low level
 SETTINGS_PATH = os.path.expanduser(os.environ.get("MEGA_SPEAK_SETTINGS_CONFIG", "~/.config/mega-speak/speech.toml"))
 VOICE_PATH = os.path.expanduser(os.environ.get("MEGA_SPEAK_VOICE_CONFIG", "~/.config/mega-speak/voice.toml"))
-CONFIG_PATHS = ["/etc/mega-speak/config.toml", "~/.config/mega-speak/config.toml", VOICE_PATH, SETTINGS_PATH, os.environ.get("MEGA_SPEAK_CONFIG", "")]
+# The key a person types into the app (--set-key); used only when no other key source is set.
+KEY_PATH = os.path.expanduser(os.environ.get("MEGA_SPEAK_KEY_PATH", "~/.config/mega-speak/api-key"))
+# Inside Mega Speak.app the bundled CLI starts from Contents/Resources/defaults.toml (the
+# release's api_url); every config file below still overrides it.
+BUNDLE_DEFAULTS = (os.path.join(os.path.dirname(os.path.realpath(sys.executable)), "..", "Resources", "defaults.toml")
+                   if getattr(sys, "frozen", False) else "")
+CONFIG_PATHS = [BUNDLE_DEFAULTS, "/etc/mega-speak/config.toml", "~/.config/mega-speak/config.toml", VOICE_PATH, SETTINGS_PATH, os.environ.get("MEGA_SPEAK_CONFIG", "")]
 LOG_PATH = os.path.expanduser(os.environ.get("MEGA_SPEAK_LOG", "~/.local/share/mega-speak/said.jsonl"))
 SAMPLE_RATE = 24000
 # the caller fields a forwarded request may carry; mega-speak-server checks the same patterns
@@ -208,15 +216,66 @@ def run_cmd(argv, what):
     return out.stdout.strip()
 
 
-def api_key(cfg):
+def key_source(cfg):
+    """Where the key comes from, first match wins: env, api_key_file, api_key_cmd, the saved key."""
     if os.environ.get("MEGA_SPEAK_API_KEY"):
-        return os.environ["MEGA_SPEAK_API_KEY"].strip()
+        return "env"
     if cfg["api_key_file"]:
+        return "api_key_file"
+    if cfg["api_key_cmd"]:
+        return "api_key_cmd"
+    if os.path.exists(KEY_PATH):
+        return "saved"
+    return "none"
+
+
+def api_key(cfg):
+    source = key_source(cfg)
+    if source == "env":
+        return os.environ["MEGA_SPEAK_API_KEY"].strip()
+    if source == "api_key_file":
         with open(os.path.expanduser(cfg["api_key_file"])) as f:
             return f.read().strip()
-    if cfg["api_key_cmd"]:
+    if source == "api_key_cmd":
         return run_cmd(cfg["api_key_cmd"], "api_key_cmd")
-    sys.exit("mega-speak: no API key: set MEGA_SPEAK_API_KEY, api_key_file or api_key_cmd (see --print-config)")
+    if source == "saved":
+        with open(KEY_PATH) as f:
+            return f.read().strip()
+    sys.exit("mega-speak: no API key: type it into Mega Speak's settings, or set MEGA_SPEAK_API_KEY, api_key_file or api_key_cmd (see --print-config)")
+
+
+def key_state(cfg):
+    """The key's source and the saved key's last four characters; never the key itself."""
+    state = {"source": key_source(cfg), "key_file": KEY_PATH, "saved": os.path.exists(KEY_PATH)}
+    if state["saved"]:
+        try:
+            with open(KEY_PATH) as f:
+                state["hint"] = "…" + f.read().strip()[-4:]
+        except OSError as e:
+            state["error"] = str(e)
+    return state
+
+
+def save_key(key):
+    """Save the key a person typed, 0600, replacing any saved one."""
+    key = key.strip()
+    if not re.fullmatch(r"[\x21-\x7e]{8,256}", key):
+        raise ValueError("the key is 8–256 visible ASCII characters with no spaces")
+    path = os.path.abspath(KEY_PATH)
+    folder = os.path.dirname(path)
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    if os.path.islink(path):
+        raise ValueError("the key file is a symlink; remove it first")
+    fd, tmp = tempfile.mkstemp(dir=folder, prefix=".api-key.")  # mkstemp creates it 0600
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(key + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
 
 
 def synthesize(cfg, text, fmt, on_audio):
@@ -473,6 +532,8 @@ def main():
     selection.add_argument("--set-settings", metavar="JSON", help="save delivery_instruction, speed and/or volume; no synthesis")
     selection.add_argument("--voice-state", action="store_true", help="print the effective voice and preference path as JSON; no synthesis")
     selection.add_argument("--set-voice", metavar="ID", help="save the app's default voice preference; no synthesis")
+    selection.add_argument("--key-state", action="store_true", help="print where the API key comes from as JSON; never the key")
+    selection.add_argument("--set-key", action="store_true", help="save the API key read from stdin (0600), then print --key-state")
     ap.add_argument("--version", action="version", version=f"mega-speak {VERSION}")
     a = ap.parse_args()
 
@@ -491,7 +552,17 @@ def main():
             saved_settings = save_speech_settings(json.loads(a.set_settings))
         except (OSError, ValueError) as e:
             sys.exit(f"mega-speak: cannot save settings: {e}")
+    if a.set_key:
+        if a.text or a.out or a.dry_run:
+            ap.error("--set-key reads the key from stdin; use it without text or speech options")
+        try:
+            save_key(sys.stdin.read())
+        except (OSError, ValueError) as e:
+            sys.exit(f"mega-speak: cannot save the key: {e}")
     cfg, emotions, read = load_config()
+    if a.key_state or a.set_key:
+        print(json.dumps(key_state(cfg), ensure_ascii=False))
+        return
     if a.settings_state or a.set_settings is not None:
         keys = ("delivery_instruction", "speed", "volume")
         print(json.dumps({**{k: cfg[k] for k in keys}, "preference_file": SETTINGS_PATH,

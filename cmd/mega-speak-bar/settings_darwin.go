@@ -22,6 +22,7 @@ func newSettingsWindow(cli string) *mac.VoiceWindow {
 		ID       string          `json:"id"`
 		Action   string          `json:"action"`
 		Settings json.RawMessage `json:"settings"`
+		Key      string          `json:"key"`
 	}, 16)
 	reply := func(id string, state json.RawMessage, err error) {
 		data := map[string]any{"id": id, "ok": err == nil, "state": state}
@@ -39,6 +40,7 @@ func newSettingsWindow(cli string) *mac.VoiceWindow {
 			ID       string          `json:"id"`
 			Action   string          `json:"action"`
 			Settings json.RawMessage `json:"settings"`
+			Key      string          `json:"key"`
 		}
 		if json.Unmarshal([]byte(raw), &r) != nil || r.ID == "" || len(r.ID) > 100 {
 			return
@@ -52,16 +54,23 @@ func newSettingsWindow(cli string) *mac.VoiceWindow {
 	go func() {
 		for r := range requests {
 			args := []string{"--settings-state"}
+			stdin := ""
 			switch r.Action {
 			case "state":
 			case "save":
 				args = []string{"--set-settings", string(r.Settings)}
+			case "key-state":
+				args = []string{"--key-state"}
+			case "set-key":
+				// the key travels on stdin, never in argv where ps shows it
+				args, stdin = []string{"--set-key"}, r.Key
 			default:
 				reply(r.ID, nil, fmt.Errorf("未知设置操作。"))
 				continue
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 			cmd := exec.CommandContext(ctx, cli, args...)
+			cmd.Stdin = strings.NewReader(stdin)
 			b, err := cmd.Output()
 			cancel()
 			if err != nil {

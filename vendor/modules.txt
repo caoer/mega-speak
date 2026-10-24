@@ -1,0 +1,10 @@
+# git.0xdao.app/caoer115/mega-update v0.1.0
+## explicit; go 1.26
+git.0xdao.app/caoer115/mega-update
+# github.com/ebitengine/purego v0.11.1
+## explicit; go 1.25.0
+github.com/ebitengine/purego
+github.com/ebitengine/purego/internal/cgo
+github.com/ebitengine/purego/internal/fakecgo
+github.com/ebitengine/purego/internal/strings
+github.com/ebitengine/purego/objc
