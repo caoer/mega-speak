@@ -20,6 +20,9 @@
 #                          into the menu bar app, never printed
 #   MEGA_SIGN              the signer (default ../mega-update/scripts/sign-macos.sh)
 #   MEGA_PUBLISH           the publisher (default page-publish.sh beside MEGA_SIGN)
+#   DMG_HOST               another Mac to build the dmg's image on, for a Mac whose
+#                          hdiutil cannot mount (MEGA_SIGN --dmg-host; DMG_SSH is the
+#                          ssh command it uses)
 #   PUBLISH_VIA            an ssh host to publish from, for a Mac whose own uploads
 #                          to page.sui.pics drop (page-publish.sh says what it needs)
 #   MEGA_SPEAK_PYTHON      a python with PyInstaller (default: a uv venv in $OUT)
@@ -99,7 +102,7 @@ EOF
 
 # --- sign, notarize, staple; dmg ---------------------------------------------
 dmg=$stage/Mega-Speak-$short.dmg
-sh "$sign" --dmg "$dmg" --volname "Mega Speak" "$app"
+sh "$sign" --dmg "$dmg" --volname "Mega Speak" ${DMG_HOST:+--dmg-host "$DMG_HOST"} "$app"
 sum=$(shasum -a 256 "$dmg" | cut -d' ' -f1)
 echo "$sum  $(basename "$dmg")" >"$dmg.sha256"
 echo "release-mac: $dmg sha256 $sum"
