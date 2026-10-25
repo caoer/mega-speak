@@ -3,10 +3,10 @@
 # libexec/mega-speak/; install-app.sh signs it into ~/Applications.
 {
   lib,
-  buildGoModule,
+  buildGo127Module,
   rev ? "dev",
 }:
-buildGoModule rec {
+buildGo127Module rec {
   pname = "mega-speak-app";
   version = "0-${rev}";
   src = lib.fileset.toSource {
