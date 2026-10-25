@@ -33,9 +33,6 @@ A click on a line focuses the herdr pane of the agent that said it.
 flags:
 `
 
-// version is set at build time.
-var version = "dev"
-
 // app is the running panel: the log it reads and where it finds agents.
 type app struct {
 	log, cards, agents, terminal, local string

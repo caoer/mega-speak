@@ -15,7 +15,9 @@ import (
 // Set by the friends' staging build (scripts/release-mac.sh): -X main.channel=staging,
 // -X main.feedURL=https://<host>/d/<slug>/release.megaspeak-mac?raw=1, -X main.pageToken=….
 // ZT's own build sets none of them, and an empty channel never makes a request.
+// version is set at build time (-X main.version=…).
 var (
+	version   = "dev"
 	channel   string
 	feedURL   string
 	pageToken string
