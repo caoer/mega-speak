@@ -47,10 +47,15 @@ Developer ID, notarized and stapled, packed in a dmg, uploaded to the friends' p
 its feed record `release.megaspeak-mac`; the app checks that feed at launch and daily and offers
 **更新 / 跳过此版本 / 稍后**. Publishing goes through mega-update's `scripts/page-publish.sh` (retried, the feed put only after the
 upload's sha256 matches; `PUBLISH_VIA=<ssh host>` publishes from another host). `--dry-run` builds and
-signs but publishes nothing. On first launch with no key
-the settings window opens at **语音钥匙**; the key typed there is saved 0600 in
-`~/.config/mega-speak/api-key` (`mega-speak --set-key` reads it from stdin, `--key-state` says where the key
-comes from, never the key). An explicit `MEGA_SPEAK_API_KEY`, `api_key_file` or `api_key_cmd` wins over it.
+signs but publishes nothing. The voice key reaches the app from the friend's page: the app owns the URL
+scheme `megaspeak`, and opening `megaspeak://set-key?key=<url-encoded key>` stores the key as
+`mega-speak --set-key` does (0600 `~/.config/mega-speak/api-key`), asks before replacing a different saved
+key (showing both last fours), and leaves a key from `MEGA_SPEAK_API_KEY`, `api_key_file` or
+`api_key_cmd` in force. On first launch with no key the settings window opens at the voice key, saying to
+tap the page's Mega Speak button; a key can also be pasted there. `--key-state` says where the key comes
+from, never the key. The app speaks Chinese when the first macOS preferred language is Chinese and English
+otherwise (every line is in `internal/i18n`); the feed's `notes` are Chinese and `notes_en` English
+(`NOTES` / `NOTES_EN` for `scripts/release-mac.sh`).
 For agents to call it, put the bundled CLI on PATH:
 `sudo ln -sf "/Applications/Mega Speak.app/Contents/MacOS/mega-speak" /usr/local/bin/mega-speak`.
 The nix build sets no channel, so it never checks a feed.

@@ -12,7 +12,7 @@
 #   dmg      Mega-Speak-X.Y.Z.dmg with an Applications link, and its sha256
 #   publish  $MEGA_PUBLISH (mega-update scripts/page-publish.sh): the dmg
 #            uploaded and its stored sha256 checked, then release.megaspeak-mac
-#            {version, url, sha256, notes, min_macos} put and read back, each
+#            {version, url, sha256, notes, notes_en, min_macos} put and read back, each
 #            call retried over a line that drops; a dry run prints both
 #
 # Env:
@@ -28,7 +28,10 @@
 #   MEGA_SPEAK_PYTHON      a python with PyInstaller (default: a uv venv in $OUT)
 #   OUT                    work folder (default ./out.noindex: Spotlight skips it,
 #                          so LaunchServices never registers a staging build)
-#   NOTES                  the feed's release notes, plain Chinese
+#   NOTES                  the feed's release notes, plain Chinese (what every app
+#                          reads; 0.1.2 and older read nothing else)
+#   NOTES_EN               the same notes in English, shown by 0.1.3+ on a Mac
+#                          whose first language is not Chinese
 # Runs on macOS arm64. ZT's own build (app.nix) sets none of the -X values and
 # never polls.
 set -euo pipefail
@@ -89,12 +92,14 @@ CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -mod=vendor -trimpath -o "$app/C
 	-X main.version=$ver -X main.channel=staging \
 	-X main.feedURL=$HOST/d/$SLUG/$KEY?raw=1 -X main.pageToken=$(tr -d '[:space:]' <"$token_file")" ./cmd/mega-speak-bar
 cp packaging/Info.plist "$app/Contents/Info.plist"
+cp -R packaging/en.lproj packaging/zh-Hans.lproj "$app/Contents/Resources/"
 plutil -replace CFBundleShortVersionString -string "$short" "$app/Contents/Info.plist"
 plutil -replace CFBundleVersion -string "$(git rev-list --count HEAD)" "$app/Contents/Info.plist"
 plutil -replace CFBundleName -string "Mega Speak" "$app/Contents/Info.plist"
 cat >"$app/Contents/Resources/defaults.toml" <<EOF
 # Mega Speak $ver ($commit): the friends' build speaks through our voice service.
-# The key is the one typed into Mega Speak's settings (~/.config/mega-speak/api-key).
+# The key arrives from the friend's page link (megaspeak://set-key) or is pasted
+# into Mega Speak's settings; either way it is ~/.config/mega-speak/api-key.
 api_url = "$API_URL"
 EOF
 "$app/Contents/MacOS/mega-speak" --version
@@ -108,15 +113,15 @@ echo "$sum  $(basename "$dmg")" >"$dmg.sha256"
 echo "release-mac: $dmg sha256 $sum"
 
 # --- publish -------------------------------------------------------------------
-notes=${NOTES:-}
+notes=${NOTES:-} notes_en=${NOTES_EN:-}
 upload=(sh "$publish" upload "$SLUG" "$dmg" "$(basename "$dmg")" application/x-apple-diskimage)
 if $dry; then
 	echo "dry run, not run: ${upload[*]}"
-	echo "dry run, not run: page-publish.sh put $SLUG $KEY release-feed@1 {version:$short, url:/f/$SLUG/<id>, sha256:$sum, notes, min_macos:$MIN_MACOS}"
+	echo "dry run, not run: page-publish.sh put $SLUG $KEY release-feed@1 {version:$short, url:/f/$SLUG/<id>, sha256:$sum, notes, notes_en, min_macos:$MIN_MACOS}"
 	exit 0
 fi
 id=$("${upload[@]}")
-data=$(jq -cn --arg v "$short" --arg u "/f/$SLUG/$id" --arg s "$sum" --arg n "$notes" --arg m "$MIN_MACOS" \
-	'{version: $v, url: $u, sha256: $s, notes: $n, min_macos: $m}')
+data=$(jq -cn --arg v "$short" --arg u "/f/$SLUG/$id" --arg s "$sum" --arg n "$notes" --arg e "$notes_en" --arg m "$MIN_MACOS" \
+	'{version: $v, url: $u, sha256: $s, notes: $n, notes_en: $e, min_macos: $m}')
 sh "$publish" put "$SLUG" "$KEY" release-feed@1 "$data"
 echo "release-mac: published $ver: $data"

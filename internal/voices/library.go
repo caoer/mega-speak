@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/caoer/mega-speak/internal/i18n"
 )
 
 //go:embed catalog.json picker.html media.zip
@@ -78,10 +80,20 @@ func (l Library) Prepare(parent string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	pages := map[i18n.Lang][]byte{}
+	for _, lang := range []i18n.Lang{i18n.ZH, i18n.EN} {
+		lines, err := json.Marshal(i18n.Page("picker.", lang))
+		if err != nil {
+			return "", err
+		}
+		pages[lang] = lines
+	}
 	hasher := sha256.New()
 	hasher.Write(b)
 	hasher.Write(catalog)
 	hasher.Write(page)
+	hasher.Write(pages[i18n.ZH])
+	hasher.Write(pages[i18n.EN])
 	stamp := hex.EncodeToString(hasher.Sum(nil))
 	dest := filepath.Join(parent, "voices-"+stamp[:16])
 	if ready, err := os.ReadFile(filepath.Join(dest, ".ready")); err == nil && string(ready) == stamp {
@@ -140,8 +152,10 @@ func (l Library) Prepare(parent string) (string, error) {
 		return "", err
 	}
 	page = bytes.ReplaceAll(page, []byte("@@CATALOG@@"), data)
-	if err = os.WriteFile(filepath.Join(stage, "picker.html"), page, 0600); err != nil {
-		return "", err
+	for lang, lines := range pages {
+		if err = os.WriteFile(filepath.Join(stage, PageName(lang)), bytes.Replace(page, []byte("@@STRINGS@@"), lines, 1), 0600); err != nil {
+			return "", err
+		}
 	}
 	if err = os.WriteFile(filepath.Join(stage, ".ready"), []byte(stamp), 0600); err != nil {
 		return "", err
@@ -154,6 +168,9 @@ func (l Library) Prepare(parent string) (string, error) {
 	}
 	return dest, nil
 }
+
+// PageName is the voice selector page in lang, in the folder Prepare returns.
+func PageName(lang i18n.Lang) string { return "picker-" + string(lang) + ".html" }
 
 type Favorites struct {
 	Path string

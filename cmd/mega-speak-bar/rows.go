@@ -1,9 +1,10 @@
 package main
 
 import (
-	"fmt"
 	"strings"
 	"time"
+
+	"github.com/caoer/mega-speak/internal/i18n"
 )
 
 // Columns of the panel, in order.
@@ -32,13 +33,13 @@ type kind struct{ icon, tint, name string }
 func kindOf(emotion string) kind {
 	switch emotion {
 	case "urgent":
-		return kind{"exclamationmark.triangle.fill", "red", "something broke: look now"}
+		return kind{"exclamationmark.triangle.fill", "red", i18n.T("row.urgent")}
 	case "cheerful", "excited":
-		return kind{"checkmark.circle.fill", "green", "done, and it went well"}
+		return kind{"checkmark.circle.fill", "green", i18n.T("row.good")}
 	case "calm", "serious":
-		return kind{"questionmark.circle.fill", "orange", "waiting on your answer"}
+		return kind{"questionmark.circle.fill", "orange", i18n.T("row.waiting")}
 	}
-	return kind{"info.circle.fill", "gray", "for your information"}
+	return kind{"info.circle.fill", "gray", i18n.T("row.info")}
 }
 
 // line is one row of the panel and the pane a click on it focuses.
@@ -62,7 +63,7 @@ func lineOf(e entry, w where, now time.Time) line {
 	case w.id != "":
 		a.text, a.sub = w.id, w.status
 	default:
-		a.text, a.sub = "unknown caller", w.status
+		a.text, a.sub = i18n.T("row.unknown"), w.status
 		if e.Host != "" && e.Host != "unknown" {
 			a.text = e.Host
 		}
@@ -89,22 +90,22 @@ func lineOf(e entry, w where, now time.Time) line {
 		em.text = "neutral"
 	}
 	if e.DryRun {
-		em.sub = "dry run"
+		em.sub = i18n.T("row.dry_run")
 	}
 	l.cells[colEmotion] = em
 
 	l.pane = w.pane
-	name := firstNonEmpty(w.label, w.id, "This agent")
+	name := firstNonEmpty(w.label, w.id, i18n.T("row.this_agent"))
 	switch {
 	case w.pane != "":
 	case w.status == "":
-		l.why = "herdr is not answering"
+		l.why = i18n.T("row.no_herdr")
 	case w.status == "no agent recorded":
-		l.why = "This line names no agent"
+		l.why = i18n.T("row.no_agent")
 	case strings.HasPrefix(w.status, "on "):
-		l.why = name + " runs on " + e.Host + ", outside this Mac's herdr"
+		l.why = i18n.F("row.remote", name, e.Host)
 	default:
-		l.why = name + " is gone: no herdr pane has it"
+		l.why = i18n.F("row.gone", name)
 	}
 	return l
 }
@@ -116,15 +117,15 @@ func age(t, now time.Time) string {
 	midnight := time.Date(y, m, dd, 0, 0, 0, 0, now.Location())
 	switch {
 	case d < time.Minute:
-		return "just now"
+		return i18n.T("row.just_now")
 	case d < time.Hour:
-		return fmt.Sprintf("%d min ago", int(d/time.Minute))
+		return i18n.F("row.min_ago", int(d/time.Minute))
 	case !t.Before(midnight):
-		return fmt.Sprintf("%d h ago", int(d/time.Hour))
+		return i18n.F("row.h_ago", int(d/time.Hour))
 	case !t.Before(midnight.AddDate(0, 0, -1)):
-		return "yesterday"
+		return i18n.T("row.yesterday")
 	}
-	return t.Format("Jan 2")
+	return t.Format(i18n.T("row.date"))
 }
 
 func firstNonEmpty(s ...string) string {

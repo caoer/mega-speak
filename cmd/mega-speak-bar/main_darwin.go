@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/caoer/mega-speak/internal/herdr"
+	"github.com/caoer/mega-speak/internal/i18n"
 	"github.com/caoer/mega-speak/internal/mac"
 	"github.com/caoer/mega-speak/internal/voices"
 )
@@ -137,13 +138,16 @@ func main() {
 	a.herdr = herdr.Client{Bin: herdrBin}
 	host, _ := os.Hostname()
 	a.local, _, _ = strings.Cut(host, ".")
+	i18n.Set(i18n.Pick(mac.PreferredLanguage()))
+	up := make(chan struct{}) // closed once the windows exist
+	mac.OnURL = func(link string) { go a.keyLink(link, speakBin, up) }
 	mac.Run(func() {
-		a.board = mac.NewBoard("text.bubble", "Mega Speak", []mac.Column{
+		a.board = mac.NewBoard("text.bubble", i18n.T("app.name"), []mac.Column{
 			{Width: 18},
-			{Title: "Time", Width: 72, Mono: true},
-			{Title: "Agent", Width: 196},
-			{Title: "Text", Wrap: true},
-			{Title: "Emotion", Width: 82},
+			{Title: i18n.T("col.time"), Width: 72, Mono: true},
+			{Title: i18n.T("col.agent"), Width: 196},
+			{Title: i18n.T("col.text"), Wrap: true},
+			{Title: i18n.T("col.emotion"), Width: 82},
 			{Title: "", Width: 64},
 		}, 900, 540)
 		a.board.OnOpen, a.board.OnClose, a.board.OnClick = a.opened, a.closed, a.clicked
@@ -154,7 +158,7 @@ func main() {
 		}
 		a.board.OnVoices = func() {
 			if a.voicePicker == nil {
-				a.board.Flash("音色库未能载入，请检查 Mega Speak 日志。")
+				a.board.Flash(i18n.T("board.voices_failed"))
 				return
 			}
 			a.voicePicker.window.Open()
@@ -162,6 +166,7 @@ func main() {
 			a.board.Close()
 		}
 		a.settingsWindow = newSettingsWindow(speakBin)
+		close(up)
 		a.board.OnInbox = func() { a.history = false; a.board.SetHistory(false) }
 		a.board.OnHistory = func() { a.history = true; a.board.SetHistory(true) }
 		a.board.OnSettings = func() { a.board.Close(); a.settingsWindow.Open(); a.settingsWindow.Eval("window.refreshSettings?.()") }
@@ -172,7 +177,7 @@ func main() {
 				ids = append(ids, e.ID)
 			}
 			if err := a.inbox.set(ids, true); err != nil {
-				a.board.Flash("归档失败：" + err.Error())
+				a.board.Flash(i18n.F("board.archive_failed", err))
 				return
 			}
 			a.renderCurrent()
@@ -245,6 +250,23 @@ func main() {
 			log.Printf("panel window %d", a.board.WindowNumber())
 		}
 	})
+}
+
+// keyLink installs the voice key from a megaspeak://set-key link once the
+// app's windows are up, and refreshes settings to show it.
+func (a *app) keyLink(link, cli string, up <-chan struct{}) {
+	<-up
+	stored := installKeyLink(link, cli, keyPrompt{
+		confirm: func(title, body, yes, no string) bool {
+			done := make(chan int, 1)
+			mac.Later(func() { done <- mac.Choose(title, body, yes, no) })
+			return <-done == 0
+		},
+		tell: func(title, body string) { mac.Later(func() { mac.Alert(title, body) }) },
+	})
+	if stored {
+		a.settingsWindow.Eval("window.refreshSettings?.()")
+	}
 }
 
 // defaultSpeak is the CLI beside this executable in Mega Speak.app, else
@@ -341,21 +363,21 @@ func (a *app) render(p panes) {
 		}
 		rows[i][nCols] = mac.Cell{Icon: action}
 	}
-	note := fmt.Sprintf("Inbox · %d 条待处理 · 点击正文可返回 Agent", len(es))
+	note := i18n.F("board.inbox_note", len(es))
 	if a.history {
-		note = fmt.Sprintf("History · %d 条播报 · 归档记录仍然保留", len(es))
+		note = i18n.F("board.history_note", len(es))
 	}
 	if p.err != nil {
-		note += " · Agent 跳转暂不可用"
+		note += i18n.T("board.no_jump")
 	}
 	empty := ""
 	switch {
 	case err != nil:
-		empty = "Can't read " + a.log + ": " + err.Error()
+		empty = i18n.F("board.cant_read", a.log, err)
 	case len(es) == 0:
-		empty = "Inbox 已清空。新的播报会显示在这里，归档内容可在 History 查看。"
+		empty = i18n.T("board.inbox_empty")
 		if a.history {
-			empty = "还没有播报记录。"
+			empty = i18n.T("board.history_empty")
 		}
 	}
 	mac.DoSync(func() {
@@ -378,7 +400,7 @@ func (a *app) clicked(row int) {
 	go func() {
 		if err := a.herdr.Focus(l.pane); err != nil {
 			log.Printf("focus %s: %v", l.pane, err)
-			a.board.Flash("herdr could not focus " + l.pane + ": " + err.Error())
+			a.board.Flash(i18n.F("board.focus_failed", l.pane, err))
 			return
 		}
 		log.Printf("focused %s", l.pane)
@@ -397,7 +419,7 @@ func (a *app) archiveRow(row int) {
 	}
 	e := a.visibleEntries[row]
 	if err := a.inbox.set([]string{e.ID}, !a.inbox.Archived[e.ID]); err != nil {
-		a.board.Flash("归档失败：" + err.Error())
+		a.board.Flash(i18n.F("board.archive_failed", err))
 		return
 	}
 	a.renderCurrent()

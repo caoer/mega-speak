@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -13,6 +12,7 @@ import (
 
 	update "git.0xdao.app/caoer115/mega-update"
 
+	"github.com/caoer/mega-speak/internal/i18n"
 	"github.com/caoer/mega-speak/internal/mac"
 )
 
@@ -32,13 +32,10 @@ func startUpdates(stateDir string) {
 		u:   u,
 		app: app,
 		ask: func(rel *update.Release) updateChoice {
-			info := fmt.Sprintf("当前版本 %s。", version)
-			if rel.Notes != "" {
-				info += "\n\n" + rel.Notes
-			}
+			title, info, buttons := updatePrompt(rel)
 			done := make(chan int, 1)
 			mac.Later(func() {
-				done <- mac.Choose("Mega Speak 有新版本 "+rel.Version, info, "更新", "跳过此版本", "稍后")
+				done <- mac.Choose(title, info, buttons...)
 			})
 			switch <-done {
 			case 0:
@@ -49,7 +46,7 @@ func startUpdates(stateDir string) {
 			return chooseLater
 		},
 		notify: func(msg string) {
-			mac.Later(func() { mac.Alert("Mega Speak", msg) })
+			mac.Later(func() { mac.Alert(i18n.T("app.name"), msg) })
 		},
 		relaunch: func() { relaunch(app) },
 	}
@@ -65,7 +62,7 @@ func relaunch(app string) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		log.Printf("relaunch %s: %v", app, err)
-		mac.Later(func() { mac.Alert("Mega Speak", "已更新，请重新打开 Mega Speak。") })
+		mac.Later(func() { mac.Alert(i18n.T("app.name"), i18n.T("update.reopen")) })
 		return
 	}
 	log.Printf("relaunching %s", app)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	update "git.0xdao.app/caoer115/mega-update"
+
+	"github.com/caoer/mega-speak/internal/i18n"
 )
 
 // Set by the friends' staging build (scripts/release-mac.sh): -X main.channel=staging,
@@ -60,7 +63,7 @@ func (p *updater) checkOnce(ctx context.Context) {
 	rel, err := p.u.Check(ctx)
 	if err != nil {
 		log.Printf("update check: %v", err)
-		p.tell(update.UserMessage(err))
+		p.tell(updateMessage(err))
 	}
 	if rel == nil {
 		return
@@ -73,7 +76,7 @@ func (p *updater) checkOnce(ctx context.Context) {
 	case chooseUpdate:
 		if err := p.u.Apply(ctx, rel, p.app); err != nil {
 			log.Printf("update %s: %v", rel.Version, err)
-			if msg := update.UserMessage(err); msg != "" {
+			if msg := updateMessage(err); msg != "" {
 				p.notify(msg)
 			}
 			return
@@ -85,6 +88,32 @@ func (p *updater) checkOnce(ctx context.Context) {
 			log.Printf("skip %s: %v", rel.Version, err)
 		}
 	}
+}
+
+// updatePrompt is the update question for rel in the app's language: its
+// title, its text (the running version and the release's notes) and the
+// buttons 更新 / 跳过此版本 / 稍后, in that order.
+func updatePrompt(rel *update.Release) (title, info string, buttons []string) {
+	info = i18n.F("update.current", version)
+	if notes := i18n.ReleaseNotes(i18n.Current(), rel.Notes, rel.NotesEN); notes != "" {
+		info += "\n\n" + notes
+	}
+	return i18n.F("update.title", rel.Version), info,
+		[]string{i18n.T("update.update"), i18n.T("update.skip"), i18n.T("update.later")}
+}
+
+// updateMessage is the line to show for an updater error, or "" when the
+// person sees nothing (a transient error: the next check tries again).
+func updateMessage(err error) string {
+	switch {
+	case errors.Is(err, update.ErrRevoked):
+		return i18n.T("update.revoked")
+	case errors.Is(err, update.ErrChecksum):
+		return i18n.T("update.checksum")
+	case errors.Is(err, update.ErrNotWritable):
+		return i18n.T("update.not_writable")
+	}
+	return ""
 }
 
 // tell shows msg once per run; a revoked token answers the same on every check.

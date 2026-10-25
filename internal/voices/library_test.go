@@ -1,10 +1,13 @@
 package voices
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/caoer/mega-speak/internal/i18n"
 )
 
 func TestCompleteCatalogAndLocalMedia(t *testing.T) {
@@ -27,9 +30,11 @@ func TestCompleteCatalogAndLocalMedia(t *testing.T) {
 			}
 		}
 	}
-	page, err := os.ReadFile(filepath.Join(root, "picker.html"))
-	if err != nil || len(page) == 0 {
-		t.Fatalf("picker: %v", err)
+	for _, lang := range []i18n.Lang{i18n.ZH, i18n.EN} {
+		page, err := os.ReadFile(filepath.Join(root, PageName(lang)))
+		if err != nil || len(page) == 0 || bytes.Contains(page, []byte("@@")) || !bytes.Contains(page, []byte(`"lang":"`+string(lang)+`"`)) {
+			t.Fatalf("picker %s: %v", lang, err)
+		}
 	}
 }
 func TestFavoritesSurviveReopenAndImportPreservesExisting(t *testing.T) {

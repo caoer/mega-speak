@@ -3,8 +3,10 @@
 package mac
 
 import (
-	"github.com/ebitengine/purego/objc"
 	"sync"
+
+	"github.com/caoer/mega-speak/internal/i18n"
+	"github.com/ebitengine/purego/objc"
 )
 
 var _ = dlopen("/System/Library/Frameworks/WebKit.framework/WebKit")
@@ -60,7 +62,7 @@ func voiceClass() objc.ID {
 	return voiceTarget
 }
 
-func NewVoiceWindow() *VoiceWindow { return NewWebWindow("Mega Speak · 音色", 1000, 740) }
+func NewVoiceWindow() *VoiceWindow { return NewWebWindow(i18n.T("window.voices"), 1000, 740) }
 
 func NewWebWindow(title string, width, height float64) *VoiceWindow {
 	w := &VoiceWindow{}

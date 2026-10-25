@@ -33,6 +33,9 @@ buildGoModule rec {
     app=$out/libexec/mega-speak/MegaSpeak.app
     install -Dm755 $out/bin/mega-speak-bar $app/Contents/MacOS/mega-speak-bar
     install -Dm644 packaging/Info.plist $app/Contents/Info.plist
+    for l in en zh-Hans; do
+      install -Dm644 packaging/$l.lproj/InfoPlist.strings $app/Contents/Resources/$l.lproj/InfoPlist.strings
+    done
     install -Dm755 scripts/install-app.sh $out/libexec/mega-speak/install-app.sh
   '';
   meta = {

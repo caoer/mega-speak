@@ -5,13 +5,14 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"html"
 	"log"
 	"os/exec"
 	"path/filepath"
 	"time"
 
+	"github.com/caoer/mega-speak/internal/i18n"
 	"github.com/caoer/mega-speak/internal/mac"
 	"github.com/caoer/mega-speak/internal/voices"
 )
@@ -51,16 +52,16 @@ func newVoicePicker(cli, settings string) (*voicePicker, error) {
 		p.allowed[voice.ID] = true
 	}
 	p.window = mac.NewVoiceWindow()
-	p.window.HTML("<html><body style='font:16px -apple-system;padding:40px'><h2>正在载入音色库…</h2><p>准备本地图标和试听文件。</p></body></html>")
+	p.window.HTML("<html><body style='font:16px -apple-system;padding:40px'><h2>" + i18n.T("voices.loading") + "</h2><p>" + i18n.T("voices.loading_sub") + "</p></body></html>")
 	p.window.OnMessage = p.message
 	go func() {
 		directory, err := library.Prepare(filepath.Join(settings, "library"))
 		if err != nil {
 			log.Printf("voice library: %v", err)
-			p.window.HTML("<html><body style='font:16px -apple-system;padding:40px'><h2>音色库无法载入</h2><p>" + html.EscapeString(err.Error()) + "</p><p>请检查本地目录权限后重新启动 Mega Speak。</p></body></html>")
+			p.window.HTML("<html><body style='font:16px -apple-system;padding:40px'><h2>" + i18n.T("voices.load_failed") + "</h2><p>" + html.EscapeString(err.Error()) + "</p><p>" + i18n.T("voices.load_failed_sub") + "</p></body></html>")
 			return
 		}
-		p.window.Load(filepath.Join(directory, "picker.html"), directory)
+		p.window.Load(filepath.Join(directory, voices.PageName(i18n.Current())), directory)
 	}()
 	go p.loop()
 	return p, nil
@@ -76,7 +77,7 @@ func (p *voicePicker) message(raw string) {
 	select {
 	case p.requests <- request:
 	default:
-		p.reply(voiceReply{ID: request.ID, Error: "操作排队中，请稍后重试。"})
+		p.reply(voiceReply{ID: request.ID, Error: i18n.T("voices.busy")})
 	}
 }
 func (p *voicePicker) reply(r voiceReply) {
@@ -89,17 +90,17 @@ func (p *voicePicker) readVoice(args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, p.cli, args...)
 	b, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("无法读写音色配置，请检查 mega-speak 命令或配置文件：%w", err)
+		return "", errors.New(i18n.F("voices.cli_failed", err))
 	}
 	var state struct {
 		Voice      string `json:"voice"`
 		Overridden bool   `json:"overridden"`
 	}
 	if err = json.Unmarshal(b, &state); err != nil {
-		return "", fmt.Errorf("mega-speak 返回了无法识别的音色配置：%w", err)
+		return "", errors.New(i18n.F("voices.cli_garbled", err))
 	}
 	if state.Overridden {
-		return state.Voice, fmt.Errorf("偏好已保存，但 MEGA_SPEAK_CONFIG 覆盖了选择；请移除该配置里的 voice 设置后重试。")
+		return state.Voice, errors.New(i18n.T("voices.overridden"))
 	}
 	return state.Voice, nil
 }
@@ -109,13 +110,13 @@ func (p *voicePicker) loop() {
 		favorites, err := voices.ReadFavorites(filepath.Join(p.settings, "favorites.json"))
 		if err != nil {
 			r.OK = false
-			r.Error = "无法读取收藏文件：" + err.Error()
+			r.Error = i18n.F("voices.favorites_failed", err)
 			r.State.Error = r.Error
 			p.reply(r)
 			continue
 		}
 		if request.Action != "state" && !p.allowed[request.Voice] {
-			err = fmt.Errorf("音色不在本地目录中。")
+			err = errors.New(i18n.T("voices.not_in_catalog"))
 		} else {
 			switch request.Action {
 			case "state":
@@ -125,10 +126,10 @@ func (p *voicePicker) loop() {
 				err = favorites.Set(request.Voice, request.Favorite)
 			case "copy":
 				if !mac.CopyText(request.Voice) {
-					err = fmt.Errorf("无法写入剪贴板，请手动复制音色 ID。")
+					err = errors.New(i18n.T("voices.copy_failed"))
 				}
 			default:
-				err = fmt.Errorf("未知操作。")
+				err = errors.New(i18n.T("voices.unknown"))
 			}
 		}
 		if err != nil {

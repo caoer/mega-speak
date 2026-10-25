@@ -54,7 +54,8 @@ type Release struct {
 	Version  string `json:"version"`
 	URL      string `json:"url"`
 	SHA256   string `json:"sha256"`
-	Notes    string `json:"notes"`
+	Notes    string `json:"notes"`    // Chinese, the language every app reads
+	NotesEN  string `json:"notes_en"` // English; an app shows Notes when it is empty
 	MinMacOS string `json:"min_macos"`
 }
 

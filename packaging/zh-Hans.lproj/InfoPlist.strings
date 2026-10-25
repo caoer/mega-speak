@@ -1,0 +1,3 @@
+/* What macOS shows for the app: Finder, the menu bar, alerts. */
+"CFBundleName" = "Mega Speak";
+"CFBundleDisplayName" = "Mega Speak";

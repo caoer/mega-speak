@@ -6,18 +6,20 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
-	"fmt"
-	"github.com/caoer/mega-speak/internal/mac"
+	"errors"
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/caoer/mega-speak/internal/i18n"
+	"github.com/caoer/mega-speak/internal/mac"
 )
 
 //go:embed settings.html
 var settingsHTML string
 
 func newSettingsWindow(cli string) *mac.VoiceWindow {
-	w := mac.NewWebWindow("Mega Speak · 设置", 720, 700)
+	w := mac.NewWebWindow(i18n.T("window.settings"), 720, 700)
 	requests := make(chan struct {
 		ID       string          `json:"id"`
 		Action   string          `json:"action"`
@@ -48,7 +50,7 @@ func newSettingsWindow(cli string) *mac.VoiceWindow {
 		select {
 		case requests <- r:
 		default:
-			reply(r.ID, nil, fmt.Errorf("操作排队中，请稍后重试。"))
+			reply(r.ID, nil, errors.New(i18n.T("settings.busy")))
 		}
 	}
 	go func() {
@@ -65,7 +67,7 @@ func newSettingsWindow(cli string) *mac.VoiceWindow {
 				// the key travels on stdin, never in argv where ps shows it
 				args, stdin = []string{"--set-key"}, r.Key
 			default:
-				reply(r.ID, nil, fmt.Errorf("未知设置操作。"))
+				reply(r.ID, nil, errors.New(i18n.T("settings.unknown")))
 				continue
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -75,9 +77,9 @@ func newSettingsWindow(cli string) *mac.VoiceWindow {
 			cancel()
 			if err != nil {
 				if e, ok := err.(*exec.ExitError); ok {
-					err = fmt.Errorf("无法保存或读取设置：%s", strings.TrimSpace(string(e.Stderr)))
+					err = errors.New(i18n.F("settings.cli_failed", strings.TrimSpace(string(e.Stderr))))
 				} else {
-					err = fmt.Errorf("无法运行 mega-speak：%w", err)
+					err = errors.New(i18n.F("settings.cli_missing", err))
 				}
 				reply(r.ID, nil, err)
 				continue
@@ -86,11 +88,11 @@ func newSettingsWindow(cli string) *mac.VoiceWindow {
 				Overridden []string `json:"overridden"`
 			}
 			if err = json.Unmarshal(b, &state); err == nil && len(state.Overridden) > 0 {
-				err = fmt.Errorf("偏好已保存，但 MEGA_SPEAK_CONFIG 覆盖了 %s，请调整该配置后重试。", strings.Join(state.Overridden, ", "))
+				err = errors.New(i18n.F("settings.overridden", strings.Join(state.Overridden, ", ")))
 			}
 			reply(r.ID, json.RawMessage(b), err)
 		}
 	}()
-	w.HTML(settingsHTML)
+	w.HTML(pageHTML(settingsHTML, "settings.html."))
 	return w
 }

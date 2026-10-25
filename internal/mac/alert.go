@@ -5,6 +5,7 @@ package mac
 import (
 	"sync"
 
+	"github.com/caoer/mega-speak/internal/i18n"
 	"github.com/ebitengine/purego/objc"
 )
 
@@ -66,7 +67,7 @@ func Choose(title, info string, buttons ...string) int {
 // Alert shows a message with one OK button, brought to the front. Same
 // threading rule as Choose.
 func Alert(title, info string) {
-	Choose(title, info, "好")
+	Choose(title, info, i18n.T("app.ok"))
 }
 
 // choiceIndex maps an NSAlert response (NSAlertFirstButtonReturn = 1000, …)

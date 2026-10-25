@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/caoer/mega-speak/internal/i18n"
 	"github.com/ebitengine/purego/objc"
 )
 
@@ -202,9 +203,9 @@ func (b *Board) build(symbol, title string, w, h float64) {
 	b.menu = send(send(class("NSMenu"), "alloc"), "initWithTitle:", nsString(title))
 	send(b.menu, "setAutoenablesItems:", false)
 	for _, item := range []struct{ title, action, key string }{
-		{"Inbox", "inbox:", ""}, {"History", "history:", ""},
-		{"", "", ""}, {"选择音色…", "voices:", ""}, {"设置…", "settings:", ","},
-		{"", "", ""}, {"退出 Mega Speak", "quit:", "q"},
+		{i18n.T("menu.inbox"), "inbox:", ""}, {i18n.T("menu.history"), "history:", ""},
+		{"", "", ""}, {i18n.T("menu.voices"), "voices:", ""}, {i18n.T("menu.settings"), "settings:", ","},
+		{"", "", ""}, {i18n.T("menu.quit"), "quit:", "q"},
 	} {
 		if item.title == "" {
 			send(b.menu, "addItem:", send(class("NSMenuItem"), "separatorItem"))
@@ -227,9 +228,9 @@ func (b *Board) build(symbol, title string, w, h float64) {
 	head := label(title, send(class("NSFont"), "systemFontOfSize:weight:", 13.0, 0.3), 0) // NSFontWeightSemibold
 	send(head, "setFrame:", CGRect{16, h - 30, 110, 18})
 	send(root, "addSubview:", head)
-	voices := send(class("NSButton"), "buttonWithTitle:target:action:", nsString("选择音色…"), t, sel("voices:"))
+	voices := send(class("NSButton"), "buttonWithTitle:target:action:", nsString(i18n.T("menu.voices")), t, sel("voices:"))
 	send(voices, "setFrame:", CGRect{130, h - 35, 106, 28})
-	send(voices, "setToolTip:", nsString("搜索音色、收藏并播放本地试听"))
+	send(voices, "setToolTip:", nsString(i18n.T("menu.voices.tip")))
 	send(root, "addSubview:", voices)
 	b.note = label("", send(class("NSFont"), "systemFontOfSize:", 11.0), send(class("NSColor"), "secondaryLabelColor"))
 	send(b.note, "setAlignment:", alignRight)
@@ -237,7 +238,7 @@ func (b *Board) build(symbol, title string, w, h float64) {
 	send(b.note, "setFrame:", CGRect{16, h - 65, w - 166, 16})
 	send(root, "addSubview:", b.note)
 
-	for i, item := range []struct{ title, action string }{{"Inbox", "inbox:"}, {"History", "history:"}, {"设置…", "settings:"}, {"全部归档", "archiveAll:"}} {
+	for i, item := range []struct{ title, action string }{{i18n.T("menu.inbox"), "inbox:"}, {i18n.T("menu.history"), "history:"}, {i18n.T("menu.settings"), "settings:"}, {i18n.T("menu.archive_all"), "archiveAll:"}} {
 		button := send(class("NSButton"), "buttonWithTitle:target:action:", nsString(item.title), t, sel(item.action))
 		x := 244.0 + float64(i)*90
 		send(button, "setFrame:", CGRect{x, h - 35, 88, 28})
@@ -297,7 +298,7 @@ func (b *Board) build(symbol, title string, w, h float64) {
 	send(root, "addSubview:", b.empty)
 
 	b.window = send(send(class("NSWindow"), "alloc"), "initWithContentRect:styleMask:backing:defer:", CGRect{0, 0, w, h}, uint64(3), uint64(2), false)
-	send(b.window, "setTitle:", nsString("Mega Speak · Inbox"))
+	send(b.window, "setTitle:", nsString(i18n.T("window.inbox")))
 	send(b.window, "setReleasedWhenClosed:", false)
 	send(b.window, "setContentView:", root)
 	send(b.window, "setDelegate:", t)
@@ -439,9 +440,9 @@ func (b *Board) cellView(row, i int) objc.ID {
 	c, w, h := b.rows[row][i], b.widths[i], b.heights[row]
 	v := send(send(send(class("NSView"), "alloc"), "initWithFrame:", CGRect{0, 0, w, h}), "autorelease")
 	if c.Icon == "archive-action" || c.Icon == "restore-action" {
-		title := "归档"
+		title := i18n.T("menu.archive")
 		if c.Icon == "restore-action" {
-			title = "恢复"
+			title = i18n.T("menu.restore")
 		}
 		button := send(class("NSButton"), "buttonWithTitle:target:action:", nsString(title), boardTarget, sel("archive:"))
 		send(button, "setFrame:", CGRect{0, (h - 28) / 2, w, 28})
@@ -533,11 +534,11 @@ func (b *Board) SetHistory(history bool) {
 	now(func() {
 		send(b.archiveAll, "setEnabled:", !history)
 		if history {
-			send(b.archiveAll, "setTitle:", nsString("历史记录"))
-			send(b.window, "setTitle:", nsString("Mega Speak · History"))
+			send(b.archiveAll, "setTitle:", nsString(i18n.T("menu.history_btn")))
+			send(b.window, "setTitle:", nsString(i18n.T("window.history")))
 		} else {
-			send(b.archiveAll, "setTitle:", nsString("全部归档"))
-			send(b.window, "setTitle:", nsString("Mega Speak · Inbox"))
+			send(b.archiveAll, "setTitle:", nsString(i18n.T("menu.archive_all")))
+			send(b.window, "setTitle:", nsString(i18n.T("window.inbox")))
 		}
 	})
 }

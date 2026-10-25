@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/caoer/mega-speak/internal/i18n"
 )
 
 func TestReadLogNewestFirstFromTheTail(t *testing.T) {
@@ -86,16 +88,22 @@ func TestAddAgentsFillsOnlyWhatHerdrLacks(t *testing.T) {
 }
 
 func TestAge(t *testing.T) {
+	defer i18n.Set(i18n.Current())
 	now := time.Date(2020, 3, 5, 10, 0, 0, 0, time.Local)
 	for _, c := range []struct {
-		ago  time.Duration
-		want string
+		ago    time.Duration
+		en, zh string
 	}{
-		{20 * time.Second, "just now"}, {5 * time.Minute, "5 min ago"}, {3 * time.Hour, "3 h ago"},
-		{11 * time.Hour, "yesterday"}, {40 * time.Hour, "Mar 3"},
+		{20 * time.Second, "just now", "刚刚"}, {5 * time.Minute, "5 min ago", "5 分钟前"}, {3 * time.Hour, "3 h ago", "3 小时前"},
+		{11 * time.Hour, "yesterday", "昨天"}, {40 * time.Hour, "Mar 3", "3月3日"},
 	} {
-		if got := age(now.Add(-c.ago), now); got != c.want {
-			t.Errorf("%v ago: got %q, want %q", c.ago, got, c.want)
+		i18n.Set(i18n.EN)
+		if got := age(now.Add(-c.ago), now); got != c.en {
+			t.Errorf("%v ago: got %q, want %q", c.ago, got, c.en)
+		}
+		i18n.Set(i18n.ZH)
+		if got := age(now.Add(-c.ago), now); got != c.zh {
+			t.Errorf("%v ago: got %q, want %q", c.ago, got, c.zh)
 		}
 	}
 }

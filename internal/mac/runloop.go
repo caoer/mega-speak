@@ -84,6 +84,9 @@ func Run(ready func()) {
 	p := poolPush()
 	app := send(class("NSApplication"), "sharedApplication")
 	send(app, "setActivationPolicy:", 1) // NSApplicationActivationPolicyAccessory
+	if OnURL != nil {
+		registerURLHandler()
+	}
 	poolPop(p)
 	go ready()
 	send(app, "run")
