@@ -60,6 +60,20 @@ For agents to call it, put the bundled CLI on PATH:
 `sudo ln -sf "/Applications/Mega Speak.app/Contents/MacOS/mega-speak" /usr/local/bin/mega-speak`.
 The nix build sets no channel, so it never checks a feed.
 
+### The friends' Linux build
+
+`scripts/release-linux.sh vX.Y.Z` builds the CLI alone for Linux x86_64 and aarch64 (`--out` files, no
+audio device needed): `scripts/build-linux.sh` runs PyInstaller (`packaging/pyinstaller-linux.spec`) in an
+AlmaLinux 8 container on one docker host per arch (`X86_HOST`, `ARM_HOST`), giving a tarball that needs
+glibc 2.17 or newer and no Python. It uploads both tarballs and `scripts/install-linux.sh` (filled with
+their urls and sha256) to the friends' page and writes the feed record `release.megaspeak-linux`. The page
+shows each friend one line that unlocks the page with that friend's own Linux token, runs the installer
+(into `~/.local`, no root) and stores the friend's voice key with `--set-key`; running the line again is
+the update. `node scripts/friends-linux-tokens.mjs <links-file>` gives each friend in the owner's links
+file that token: a viewer token labelled `friend-<name>-linux`, stored on the page encrypted with the
+friend's voice key so only that friend's page can read it. Run it again after adding a friend;
+`--rotate --only <name>` replaces one friend's token.
+
 ## Configure
 
 `~/.config/mega-speak/config.toml`; [config.example.toml](config.example.toml) explains every key:
