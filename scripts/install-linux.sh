@@ -43,7 +43,7 @@ tmp=$(mktemp -d "$prefix/lib/.mega-speak.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
 say "mega-speak $VERSION: downloading / 下载中…"
-curl -fsS -b "$MEGA_JAR" -o "$tmp/m.tar.gz" "$HOST$url" || die "download failed; run the line again / 下载失败，请重新运行那一行"
+curl -fsSL -b "$MEGA_JAR" -o "$tmp/m.tar.gz" "$HOST$url" || die "download failed; run the line again / 下载失败，请重新运行那一行"
 got=$(sha "$tmp/m.tar.gz")
 [ "$got" = "$sum" ] || die "the download is damaged (sha256 $got); run the line again / 下载的文件不完整，请重新运行那一行"
 tar -xzf "$tmp/m.tar.gz" -C "$tmp"
