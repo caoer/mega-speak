@@ -66,10 +66,10 @@ for (const f of friends.filter((f) => !only || f.name === only)) {
   try { run("page-data", ["get", SLUG, rid]); have = true; } catch {}
   if (have && live.length && !rotate) { console.log(`${f.name}: kept (${rid}, token ${live.map((t) => t.id).join(",")})`); continue; }
   if (dry) { console.log(`${f.name}: would ${live.length ? "revoke " + live.length + " and " : ""}mint ${label}, write ${rid}`); continue; }
-  for (const t of live) run("page-token", ["revoke", t.id]);
   const r = execFileSync(`${BIN}/page-token`, ["mint", SLUG, "--role", "viewer", "--label", label, "--user", f.name], { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
   const secret = new URL(r.trim()).hash.replace(/^#t=/, "");
   if (!secret) throw new Error(`${f.name}: mint printed no link`);
   run("page-data", ["put", SLUG, rid, "--schema", "linux-token@1", "--force", "--notify", "none", "--data", JSON.stringify(await seal(f.key, secret))]);
+  for (const t of live) run("page-token", ["revoke", t.id]); // only once the new record is in place
   console.log(`${f.name}: minted ${label}, wrote ${rid}`);
 }

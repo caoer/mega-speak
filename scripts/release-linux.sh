@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # scripts/release-linux.sh [--dry-run] vX.Y.Z — the friends' staging mega-speak for Linux.
 #
 #   tag      HEAD carries vX.Y.Z and the tree is clean (a dry run builds HEAD at any
@@ -61,7 +61,7 @@ glibc=$(sort -t. -k1,1n -k2,2n "$out"/*.glibc | tail -n 1)
 declare -A sum
 for a in x86_64 aarch64; do
 	t=$out/mega-speak-$short-linux-$a.tar.gz
-	tar -tzf "$t" | grep -qx 'mega-speak/bin/mega-speak' || { echo "release-linux: $t has no mega-speak/bin/mega-speak" >&2; exit 1; }
+	tar -tzf "$t" | grep -x 'mega-speak/bin/mega-speak' >/dev/null || { echo "release-linux: $t has no mega-speak/bin/mega-speak" >&2; exit 1; }
 	sum[$a]=$(sha256sum "$t" | cut -d' ' -f1)
 	echo "release-linux: $(basename "$t") sha256 ${sum[$a]}"
 done
