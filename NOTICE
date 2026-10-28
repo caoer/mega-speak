@@ -1,0 +1,26 @@
+Mega Speak
+Copyright 2026 The Mega Speak authors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+------------------------------------------------------------------------
+Volcengine voice catalog and previews
+
+internal/voices/catalog.json and internal/voices/media.zip (voice names,
+descriptions, avatars and official preview audio for the seed-tts-2.0 voices)
+were captured from Volcengine's public voice gallery
+(https://console.volcengine.com/ark/region:cn-beijing/experience/voice?model=doubao-seed-tts-2-0).
+They belong to Beijing Volcano Engine Technology Co., Ltd. / ByteDance, are
+not covered by the Apache License, and are included only so the voice picker
+can show the voices offline.
+
+Speech synthesis needs your own Volcengine speech API key with seed-tts-2.0
+enabled.
+
+------------------------------------------------------------------------
+Vendored Go modules
+
+vendor/github.com/ebitengine/purego is purego, under the Apache License,
+Version 2.0 (its LICENSE sits in its directory).
+vendor/git.0xdao.app/caoer115/mega-update is by the Mega Speak authors and is
+licensed with this project.

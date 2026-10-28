@@ -13,6 +13,9 @@ runs `mega-speak --emotion urgent "CI 挂了，需要你看一眼。"` and the s
 
 ## Install on a Mac
 
+The public mirror is https://github.com/caoer/mega-speak; use it in place of `git.0xdao.app/caoer115/mega-speak`
+in the commands below.
+
 You need a Volcengine speech API key with seed-tts-2.0 enabled.
 
 With nix:
@@ -147,3 +150,9 @@ The API's `additions.context_texts` currently honors **only the first string**. 
 **归档** hides one utterance from Inbox. **全部归档** archives the currently listed Inbox entries. **History** retains every log entry, and **恢复** returns an archived entry to Inbox. Viewing a line does not automatically archive it. Archive decisions persist in `~/Library/Application Support/MegaSpeak/inbox.json`; archiving never modifies `said.jsonl`. New logs have UUIDs; older logs get stable identities based on their original content and byte position so repeated identical messages can be archived individually. Malformed archive state is reported instead of silently clearing the Inbox.
 
 One app instance per user owns `~/.cache/mega-speak-app/instance.lock`. A subsequent launch asks the existing app to open a view over a local Unix socket, then exits without adding another icon. `mega-speak-bar --show-settings` opens settings directly. Isolated UI testing must also set `--instance-dir`, `--settings-dir`, `--log`, `MEGA_SPEAK_SETTINGS_CONFIG` and `MEGA_SPEAK_VOICE_CONFIG` to scratch paths. Intentional Quit unloads the launch agent only if its PID owns this app instance, avoiding a KeepAlive relaunch; normal launch or login starts the app again.
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE). The bundled Volcengine voice catalog and preview audio
+(`internal/voices/catalog.json`, `internal/voices/media.zip`) are Volcengine's and not covered by it;
+see [NOTICE](NOTICE). Speech needs your own Volcengine speech API key.
